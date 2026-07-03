@@ -23,8 +23,8 @@ dev = [
 ]
 
 [tool.flet]
-org = "com.fazi.vidsaver"
-product = "flet"
+org = "com.fazi"
+product = "Vidsaver"
 company = "NextInPK"
 copyright = "Copyright (C) 2023-2026 by Fazi-Gondal"
 

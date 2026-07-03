@@ -99,36 +99,43 @@ jobs:
           uv run ${{ matrix.build_cmd }} --yes --verbose
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v5.0.0
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}-build-artifact
           path: ${{ matrix.artifact_path }}
           if-no-files-found: error
-          overwrite: false
+          overwrite: true
 
   release:
     name: Publish GitHub Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write # required for creating/updating a release
     steps:
-      - name: Download APK artifact
-        uses: actions/download-artifact@v5
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
         with:
-          name: apk-build-artifact
-          path: dist/apk
+          path: dist                      # each artifact lands in dist/<artifact-name>/
+          pattern: "*-build-artifact"     # matches every matrix target
+          merge-multiple: false           # keep each in its own subdirectory
 
-      - name: Download Windows artifact
-        uses: actions/download-artifact@v5
-        with:
-          name: windows-build-artifact
-          path: dist/windows
+      - name: Zip each artifact into a named archive
+        shell: bash
+        run: |
+          cd dist
+          for dir in */; do
+            name="${dir%/}"               # strip trailing slash  e.g. "apk-build-artifact"
+            echo "Zipping $name ..."
+            zip -r "${name}.zip" "$dir"
+          done
+          echo "--- produced zips ---"
+          ls -lh *.zip
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/apk/**/*.apk
-            dist/windows/**/*.exe
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: dist/*.zip
