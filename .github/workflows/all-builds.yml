@@ -42,6 +42,7 @@ jobs:
             build_cmd: "flet build apk --split-per-abi --arch arm64-v8a"
             artifact_path: "build/apk"
             linux_deps: false
+            android_signing: true
 
           # -------- Disabled Builds --------
           # Uncomment these targets when you need them again.
@@ -118,10 +119,43 @@ jobs:
             gstreamer1.0-gtk3 \
             gstreamer1.0-pulseaudio
 
+      - name: Prepare Android signing key
+        if: matrix.android_signing
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ANDROID_KEYSTORE_BASE64}" ]; then
+            echo "ANDROID_KEYSTORE_BASE64 secret is required for signed Android releases." >&2
+            exit 1
+          fi
+
+          printf '%s' "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > upload-keystore.jks
+
       - name: Build application
         shell: bash
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          uv run ${{ matrix.build_cmd }} --yes --verbose
+          if [ "${{ matrix.android_signing }}" = "true" ]; then
+            if [ -z "${ANDROID_KEYSTORE_PASSWORD}" ] || [ -z "${ANDROID_KEY_PASSWORD}" ] || [ -z "${ANDROID_KEY_ALIAS}" ]; then
+              echo "ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_PASSWORD, and ANDROID_KEY_ALIAS secrets are required for signed Android releases." >&2
+              exit 1
+            fi
+
+            uv run ${{ matrix.build_cmd }} \
+              --android-signing-key-store upload-keystore.jks \
+              --android-signing-key-store-password "${ANDROID_KEYSTORE_PASSWORD}" \
+              --android-signing-key-password "${ANDROID_KEY_PASSWORD}" \
+              --android-signing-key-alias "${ANDROID_KEY_ALIAS}" \
+              --yes --verbose
+          else
+            uv run ${{ matrix.build_cmd }} --yes --verbose
+          fi
 
       - name: Verify build output
         shell: bash
