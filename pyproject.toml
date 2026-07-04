@@ -12,7 +12,8 @@ dependencies = [
     "flet-video>=0.85.3",
     "flet-permission-handler>=0.85.3",
     "yt-dlp",
-    "requests"
+    "requests",
+    "certifi"
 ]
 
 [dependency-groups]
