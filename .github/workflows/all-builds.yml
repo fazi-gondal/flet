@@ -147,8 +147,10 @@ jobs:
               exit 1
             fi
 
+            KEYSTORE_PATH="$(pwd)/upload-keystore.jks"
+
             uv run ${{ matrix.build_cmd }} \
-              --android-signing-key-store upload-keystore.jks \
+              --android-signing-key-store "${KEYSTORE_PATH}" \
               --android-signing-key-store-password "${ANDROID_KEYSTORE_PASSWORD}" \
               --android-signing-key-password "${ANDROID_KEY_PASSWORD}" \
               --android-signing-key-alias "${ANDROID_KEY_ALIAS}" \
