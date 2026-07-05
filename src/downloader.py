@@ -33,6 +33,8 @@ PLATFORM_CHIP_COLOR = {
     'Video':     ft.Colors.BLUE_100,
 }
 
+VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.mov', '.avi', '.webm', '.m4v', '.3gp')
+
 
 def detect_platform(url: str) -> str:
     u = url.lower()
@@ -176,6 +178,8 @@ def run_download(url: str, target_dir: str, cookie_path: str,
         on_finish()
         return
 
+    downloaded_paths = []
+
     def _hook(d):
         if d['status'] == 'downloading':
             raw = d.get('_percent_str', '0%')
@@ -187,6 +191,9 @@ def run_download(url: str, target_dir: str, cookie_path: str,
             on_status(f"Downloading: {raw.strip()}")
             page.update()
         elif d['status'] == 'finished':
+            filename = d.get('filename')
+            if filename:
+                downloaded_paths.append(filename)
             on_progress(1.0)
             on_status("Saving file…")
             page.update()
@@ -231,9 +238,8 @@ def run_download(url: str, target_dir: str, cookie_path: str,
         },
     }
 
-    video_exts = ('.mp4', '.mkv', '.mov', '.avi')
     before = (
-        set(f for f in os.listdir(target_dir) if f.lower().endswith(video_exts))
+        set(f for f in os.listdir(target_dir) if f.lower().endswith(VIDEO_EXTENSIONS))
         if os.path.exists(target_dir) else set()
     )
 
@@ -251,23 +257,33 @@ def run_download(url: str, target_dir: str, cookie_path: str,
             ydl.download([url])
 
         # Persist metadata for newly created files
-        after = set(f for f in os.listdir(target_dir) if f.lower().endswith(video_exts))
+        after = set(f for f in os.listdir(target_dir) if f.lower().endswith(VIDEO_EXTENSIONS))
         new_files = after - before
-        if new_files:
+        detected_paths = [
+            path for path in downloaded_paths
+            if path and os.path.exists(path) and path.lower().endswith(VIDEO_EXTENSIONS)
+        ]
+        detected_files = {os.path.basename(path) for path in detected_paths}
+        saved_files = sorted(new_files | detected_files)
+
+        if saved_files:
             meta = load_metadata(metadata_path)
             platform = detect_platform(url)
             date_str = datetime.now().strftime('%d %b %Y')
-            for fname in new_files:
+            for fname in saved_files:
                 meta[fname] = {'platform': platform, 'url': url, 'date': date_str}
             save_metadata(metadata_path, meta)
 
-            new_paths = [os.path.join(target_dir, fname) for fname in new_files]
+            new_paths = [os.path.join(target_dir, fname) for fname in saved_files]
             if scan_android_media(new_paths):
                 on_status("Video saved and added to Gallery.")
             else:
                 on_status("Video saved successfully.")
         else:
-            on_status("Video saved successfully.")
+            on_error(
+                "No video file was saved. Instagram may require fresh cookies, "
+                "login access, or the link may not contain a downloadable video."
+            )
 
     except Exception as exc:
         on_error(str(exc))

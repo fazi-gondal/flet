@@ -12,7 +12,7 @@ import flet as ft
 
 
 ANDROID_STORAGE_ROOT = "/storage/emulated/0"
-VIDEO_EXTENSIONS = (".mp4", ".mkv", ".mov", ".avi")
+VIDEO_EXTENSIONS = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".3gp")
 
 
 async def main(page: ft.Page):

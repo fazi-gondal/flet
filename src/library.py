@@ -8,6 +8,8 @@ import os
 import flet as ft
 from downloader import PLATFORM_COLOR, PLATFORM_CHIP_COLOR, load_metadata
 
+VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.mov', '.avi', '.webm', '.m4v', '.3gp')
+
 
 def build_video_card(file_name: str, download_dir: str, meta: dict,
                      on_play, on_delete) -> ft.Card:
@@ -107,7 +109,7 @@ def build_library_view(download_dir: str, metadata_path: str,
         try:
             files = [
                 f for f in os.listdir(download_dir)
-                if f.lower().endswith(('.mp4', '.mkv', '.mov', '.avi'))
+                if f.lower().endswith(VIDEO_EXTENSIONS)
             ]
             files.sort(
                 key=lambda x: os.path.getmtime(os.path.join(download_dir, x)),
