@@ -1,8 +1,9 @@
 """
 App entry point.
 
-Keep startup lean: render the Home view before touching storage,
-permissions, downloads, the library, or video playback.
+Startup is intentionally front-loaded with only visible Home controls. Storage,
+permissions, library, downloader, and player code are wired after the first
+page render so the Home screen can appear as soon as Flet starts Python.
 """
 
 import os
@@ -20,13 +21,55 @@ async def main(page: ft.Page):
     page.padding = 0
     page.spacing = 0
     page.safe_area = True
+    page.vertical_alignment = ft.MainAxisAlignment.CENTER
+    page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
     page.appbar = ft.AppBar(
         title=ft.Text("Vidsaver", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
         center_title=True,
         bgcolor=ft.Colors.BLUE_700,
     )
-    page.vertical_alignment = ft.MainAxisAlignment.CENTER
-    page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+
+    url_input = ft.TextField(
+        label="Paste video link",
+        border_radius=12,
+        filled=True,
+        prefix_icon=ft.Icons.LINK,
+    )
+    status_text = ft.Text(value="", color=ft.Colors.BLUE_GREY, size=12)
+    progress_bar = ft.ProgressBar(
+        height=4,
+        value=None,
+        visible=False,
+        color=ft.Colors.BLUE,
+        bgcolor=ft.Colors.BLUE_100,
+        border_radius=4,
+    )
+    download_btn = ft.Button(
+        "Download",
+        icon=ft.Icons.DOWNLOAD_ROUNDED,
+        height=40,
+        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700, color=ft.Colors.WHITE),
+    )
+
+    home_view = ft.Container(
+        content=ft.Column(
+            controls=[url_input, download_btn, progress_bar, status_text],
+            spacing=12,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+        ),
+        padding=ft.Padding(left=24, right=24, top=24, bottom=24),
+        expand=True,
+    )
+    main_container = ft.Container(content=home_view, expand=True)
+    nav_bar = ft.NavigationBar(
+        selected_index=0,
+        destinations=[
+            ft.NavigationBarDestination(icon=ft.Icons.HOME, label="Home"),
+            ft.NavigationBarDestination(icon=ft.Icons.DOWNLOAD, label="Downloads"),
+        ],
+    )
+    page.navigation_bar = nav_bar
+    page.add(ft.SafeArea(content=main_container, expand=True))
 
     is_android = os.path.exists(ANDROID_STORAGE_ROOT)
     download_dir = None
@@ -120,22 +163,6 @@ async def main(page: ft.Page):
         except Exception:
             pass
 
-    url_input = ft.TextField(
-        label="Paste video link",
-        border_radius=12,
-        filled=True,
-        prefix_icon=ft.Icons.LINK,
-    )
-    status_text = ft.Text(value="", color=ft.Colors.BLUE_GREY, size=12)
-    progress_bar = ft.ProgressBar(
-        height=4,
-        value=None,
-        visible=False,
-        color=ft.Colors.BLUE,
-        bgcolor=ft.Colors.BLUE_100,
-        border_radius=4,
-    )
-
     async def try_paste_clipboard():
         try:
             clip = await ft.Clipboard().get()
@@ -219,30 +246,6 @@ async def main(page: ft.Page):
 
         set_download_busy("Fetching video...")
         start_download(url)
-
-    download_btn = ft.Button(
-        "Download",
-        icon=ft.Icons.DOWNLOAD_ROUNDED,
-        height=40,
-        on_click=on_download_click,
-        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700, color=ft.Colors.WHITE),
-    )
-
-    url_input.on_focus = on_url_focus
-    url_input.on_submit = on_download_click
-    page.on_app_lifecycle_state_change = on_app_lifecycle
-
-    home_view = ft.Container(
-        content=ft.Column(
-            controls=[url_input, download_btn, progress_bar, status_text],
-            spacing=12,
-            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-        ),
-        padding=ft.Padding(left=24, right=24, top=24, bottom=24),
-        expand=True,
-    )
-
-    main_container = ft.Container(content=home_view, expand=True)
 
     def ensure_library_view():
         nonlocal library_view, refresh_downloads_list
@@ -347,16 +350,12 @@ async def main(page: ft.Page):
             main_container.alignment = None
             page.update()
 
-    page.navigation_bar = ft.NavigationBar(
-        selected_index=0,
-        on_change=on_navigation_change,
-        destinations=[
-            ft.NavigationBarDestination(icon=ft.Icons.HOME, label="Home"),
-            ft.NavigationBarDestination(icon=ft.Icons.DOWNLOAD, label="Downloads"),
-        ],
-    )
-
-    page.add(ft.SafeArea(content=main_container, expand=True))
+    url_input.on_focus = on_url_focus
+    url_input.on_submit = on_download_click
+    download_btn.on_click = on_download_click
+    page.on_app_lifecycle_state_change = on_app_lifecycle
+    nav_bar.on_change = on_navigation_change
+    page.update()
 
     async def on_start():
         threading.Thread(target=scan_existing_downloads, daemon=True).start()
