@@ -8,7 +8,6 @@ page render so the Home screen can appear as soon as Flet starts Python.
 
 import os
 import asyncio
-import threading
 
 import flet as ft
 
@@ -18,6 +17,7 @@ VIDEO_EXTENSIONS = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".3gp")
 
 
 async def main(page: ft.Page):
+    loop = asyncio.get_running_loop()
     page.title = "Vidsaver"
     page.padding = 0
     page.spacing = 0
@@ -177,6 +177,19 @@ async def main(page: ft.Page):
         except Exception:
             pass
 
+    def schedule_media_scan_later(paths: list[str]):
+        if not is_android:
+            return
+
+        async def delayed_scan():
+            from downloader import scan_android_media
+
+            for delay in (2, 8, 20):
+                await asyncio.sleep(delay)
+                await asyncio.to_thread(scan_android_media, paths)
+
+        loop.call_soon_threadsafe(lambda: asyncio.create_task(delayed_scan()))
+
     async def try_paste_clipboard():
         try:
             clip = await ft.Clipboard().get()
@@ -244,9 +257,9 @@ async def main(page: ft.Page):
         cookie_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
         from downloader import run_download
 
-        threading.Thread(
-            target=run_download,
-            args=(
+        async def download_worker():
+            await asyncio.to_thread(
+                run_download,
                 url,
                 directory,
                 cookie_path,
@@ -256,9 +269,10 @@ async def main(page: ft.Page):
                 on_finish,
                 on_error,
                 page,
-            ),
-            daemon=True,
-        ).start()
+                schedule_media_scan_later,
+            )
+
+        asyncio.create_task(download_worker())
 
     async def on_download_click(e):
         url = (url_input.value or "").strip()
@@ -394,7 +408,7 @@ async def main(page: ft.Page):
 
     async def on_start():
         await asyncio.sleep(3)
-        threading.Thread(target=scan_existing_downloads, daemon=True).start()
+        await asyncio.to_thread(scan_existing_downloads)
 
     page.run_task(on_start)
 

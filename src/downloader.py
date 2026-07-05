@@ -10,7 +10,6 @@ import json
 import sys
 import mimetypes
 import subprocess
-import threading
 import time
 from datetime import datetime
 from urllib.parse import quote
@@ -217,27 +216,6 @@ def register_android_media_store(paths: list[str]) -> bool:
         return False
 
 
-def scan_android_media_later(paths: list[str],
-                             delays: tuple[int, ...] = (2, 8, 20)) -> None:
-    """
-    Some Android file managers and social apps update MediaStore lazily.
-    Re-scan after the file handle has fully settled so other apps see it.
-    """
-    if not os.path.exists("/storage/emulated/0"):
-        return
-
-    file_paths = [path for path in paths if path and os.path.isfile(path)]
-    if not file_paths:
-        return
-
-    def worker():
-        for delay in delays:
-            time.sleep(delay)
-            scan_android_media(file_paths)
-
-    threading.Thread(target=worker, daemon=True).start()
-
-
 def collect_downloaded_paths(info) -> list[str]:
     """Return final downloaded file paths from yt-dlp info dictionaries."""
     paths = []
@@ -266,7 +244,8 @@ def run_download(url: str, target_dir: str, cookie_path: str,
                  on_progress, # callable(float)
                  on_finish,   # callable()
                  on_error,    # callable(str)
-                 page):
+                 page,
+                 schedule_media_scan_later=None):
     """
     Execute a yt-dlp download synchronously (run this in a daemon thread).
     All UI feedback goes through the on_* callbacks.
@@ -391,7 +370,8 @@ def run_download(url: str, target_dir: str, cookie_path: str,
             new_paths = [os.path.join(target_dir, fname) for fname in saved_files]
             media_registered = register_android_media_store(new_paths)
             scan_started = scan_android_media(new_paths)
-            scan_android_media_later(new_paths)
+            if schedule_media_scan_later:
+                schedule_media_scan_later(new_paths)
             if media_registered or scan_started:
                 on_status("Video saved and added to Gallery.")
             else:

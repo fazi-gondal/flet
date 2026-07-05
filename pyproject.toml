@@ -8,9 +8,9 @@ authors = [
     { name = "Fazi-Gondal", email = "nextinpk@gmail.com" }
 ]
 dependencies = [
-    "flet>=0.85.3",
-    "flet-video>=0.85.3",
-    "flet-permission-handler>=0.85.3",
+    "flet==0.86.0.dev1",
+    "flet-video==0.86.0.dev1",
+    "flet-permission-handler==0.86.0.dev1",
     "yt-dlp",
     "requests",
     "certifi",
@@ -21,9 +21,9 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "flet-cli>=0.85.3",
-    "flet-desktop>=0.85.3",
-    "flet-web>=0.85.3",
+    "flet-cli==0.86.0.dev1",
+    "flet-desktop==0.86.0.dev1",
+    "flet-web==0.86.0.dev1",
 ]
 
 [tool.flet]
