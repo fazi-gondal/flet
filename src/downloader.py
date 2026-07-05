@@ -169,6 +169,54 @@ def scan_android_media(paths: list[str]) -> bool:
         return False
 
 
+def register_android_media_store(paths: list[str]) -> bool:
+    """
+    Insert saved videos into Android MediaStore directly. This mirrors the
+    refresh File Manager triggers when it notices a new public media file.
+    """
+    file_paths = [path for path in paths if path and os.path.isfile(path)]
+    if not file_paths or not os.path.exists("/storage/emulated/0"):
+        return False
+
+    try:
+        from jnius import autoclass
+
+        activity_thread = autoclass("android.app.ActivityThread")
+        context = activity_thread.currentApplication().getApplicationContext()
+        resolver = context.getContentResolver()
+        content_values = autoclass("android.content.ContentValues")
+        media_store_video = autoclass("android.provider.MediaStore$Video$Media")
+        build_version = autoclass("android.os.Build$VERSION")
+
+        registered = False
+        now = int(time.time())
+        for path in file_paths:
+            values = content_values()
+            name = os.path.basename(path)
+            title, _ = os.path.splitext(name)
+            mime_type = mimetypes.guess_type(path)[0] or "video/mp4"
+            modified = int(os.path.getmtime(path))
+            size = int(os.path.getsize(path))
+
+            values.put("_data", path)
+            values.put("_display_name", name)
+            values.put("title", title)
+            values.put("mime_type", mime_type)
+            values.put("date_added", now)
+            values.put("date_modified", modified)
+            values.put("_size", size)
+            if build_version.SDK_INT >= 29:
+                values.put("relative_path", "Movies/VidSaver/")
+                values.put("is_pending", 0)
+
+            uri = resolver.insert(media_store_video.EXTERNAL_CONTENT_URI, values)
+            registered = registered or uri is not None
+
+        return registered
+    except Exception:
+        return False
+
+
 def scan_android_media_later(paths: list[str],
                              delays: tuple[int, ...] = (2, 8, 20)) -> None:
     """
@@ -341,9 +389,10 @@ def run_download(url: str, target_dir: str, cookie_path: str,
             save_metadata(metadata_path, meta)
 
             new_paths = [os.path.join(target_dir, fname) for fname in saved_files]
+            media_registered = register_android_media_store(new_paths)
             scan_started = scan_android_media(new_paths)
             scan_android_media_later(new_paths)
-            if scan_started:
+            if media_registered or scan_started:
                 on_status("Video saved and added to Gallery.")
             else:
                 on_status("Video saved. Gallery may update shortly.")

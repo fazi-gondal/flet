@@ -1,9 +1,9 @@
 [project]
 name = "vidsaver"
-version = "1.1.1"
+version = "1.1.2"
 description = ""
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.14"
 authors = [
     { name = "Fazi-Gondal", email = "nextinpk@gmail.com" }
 ]

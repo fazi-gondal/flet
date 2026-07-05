@@ -52,11 +52,21 @@ async def main(page: ft.Page):
         style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700, color=ft.Colors.WHITE),
     )
 
+    home_form = ft.Column(
+        controls=[url_input, download_btn, progress_bar, status_text],
+        spacing=12,
+        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+    )
+    footer_text = ft.Text(
+        "Vidsaver made with ❤️ by Fazi Gondal",
+        size=16,
+        color=ft.Colors.BLUE_GREY,
+        text_align=ft.TextAlign.CENTER,
+    )
     home_view = ft.Container(
         content=ft.Column(
-            controls=[url_input, download_btn, progress_bar, status_text],
-            spacing=12,
-            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+            controls=[home_form, ft.Container(expand=True), footer_text],
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
         ),
         padding=ft.Padding(left=24, right=24, top=24, bottom=24),
         expand=True,
@@ -201,7 +211,11 @@ async def main(page: ft.Page):
             status_text.value = f"Downloading video... {int((progress_bar.value or 0) * 100)}%"
         else:
             status_text.value = message
-        if message in ("Video saved and added to Gallery.", "Video saved successfully."):
+        if message in (
+            "Video saved and added to Gallery.",
+            "Video saved successfully.",
+            "Video saved. Gallery may update shortly.",
+        ):
             download_completed = True
 
     def on_finish():
@@ -215,7 +229,7 @@ async def main(page: ft.Page):
                     open=True,
                     duration=2500,
                     behavior=ft.SnackBarBehavior.FLOATING,
-                    margin=ft.Margin(left=16, top=0, right=16, bottom=16),
+                    margin=ft.Margin(left=16, top=0, right=16, bottom=10),
                 )
             )
         page.update()
