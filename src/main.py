@@ -7,6 +7,7 @@ page render so the Home screen can appear as soon as Flet starts Python.
 """
 
 import os
+import asyncio
 import threading
 
 import flet as ft
@@ -70,6 +71,8 @@ async def main(page: ft.Page):
     )
     page.navigation_bar = nav_bar
     page.add(ft.SafeArea(content=main_container, expand=True))
+    page.update()
+    await asyncio.sleep(0)
 
     is_android = os.path.exists(ANDROID_STORAGE_ROOT)
     download_dir = None
@@ -82,6 +85,7 @@ async def main(page: ft.Page):
     video_control = None
     player_title = None
     close_btn = None
+    download_completed = False
 
     video_domains = (
         "tiktok.com", "vm.tiktok.com", "vt.tiktok.com",
@@ -181,6 +185,8 @@ async def main(page: ft.Page):
             await try_paste_clipboard()
 
     def set_download_busy(message: str):
+        nonlocal download_completed
+        download_completed = False
         progress_bar.value = None
         progress_bar.visible = True
         status_text.value = message
@@ -190,18 +196,33 @@ async def main(page: ft.Page):
         progress_bar.value = value
 
     def on_status(message):
+        nonlocal download_completed
         if message.startswith("Downloading:"):
             status_text.value = f"Downloading video... {int((progress_bar.value or 0) * 100)}%"
         else:
             status_text.value = message
+        if message in ("Video saved and added to Gallery.", "Video saved successfully."):
+            download_completed = True
 
     def on_finish():
         progress_bar.visible = False
         if refresh_downloads_list:
             refresh_downloads_list()
+        if download_completed:
+            page.overlay.append(
+                ft.SnackBar(
+                    content=ft.Text("Video download complete"),
+                    open=True,
+                    duration=2500,
+                    behavior=ft.SnackBarBehavior.FLOATING,
+                    margin=ft.Margin(left=16, top=0, right=16, bottom=16),
+                )
+            )
         page.update()
 
     def on_error(message):
+        nonlocal download_completed
+        download_completed = False
         status_text.value = f"Error: {message}"
 
     def start_download(url: str):
@@ -358,6 +379,7 @@ async def main(page: ft.Page):
     page.update()
 
     async def on_start():
+        await asyncio.sleep(3)
         threading.Thread(target=scan_existing_downloads, daemon=True).start()
 
     page.run_task(on_start)
