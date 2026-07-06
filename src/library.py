@@ -1,19 +1,20 @@
 """
-library.py — Downloads library view: list view + card builder.
-Receives callbacks for play / delete so it has no knowledge of
-the player or router.
+library.py — Declarative downloads library view.
 """
 
 import os
+import asyncio
 import flet as ft
 from downloader import PLATFORM_COLOR, PLATFORM_CHIP_COLOR, load_metadata
 
 VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.mov', '.avi', '.webm', '.m4v', '.3gp')
 
 
-def build_video_card(file_name: str, download_dir: str, meta: dict,
-                     on_play, on_delete) -> ft.Card:
-    """Return a styled Card for one video file."""
+@ft.component
+def VideoCard(file_name: str, download_dir: str, meta: dict, on_play, on_delete):
+    """
+    Styled Card component representing one downloaded video.
+    """
     info        = meta.get(file_name, {})
     platform    = info.get('platform', 'Video')
     date_str    = info.get('date', '')
@@ -95,59 +96,117 @@ def build_video_card(file_name: str, download_dir: str, meta: dict,
     )
 
 
-def build_library_view(download_dir: str, metadata_path: str,
-                        on_play, on_delete, page: ft.Page):
+@ft.component
+def LibraryView(download_dir: str, metadata_path: str, on_play, initial_scroll=0, on_scroll_change=None, refresh_trigger=0):
     """
-    Return (library_column, list_view, refresh_fn).
-    refresh_fn() re-populates the list from disk and calls page.update().
+    Declarative component for the Downloads library.
+    Automatically maintains scroll position and handles items dynamically.
     """
-    list_view = ft.ListView(expand=True, spacing=0, padding=0)
+    files, set_files = ft.use_state([])
+    meta, set_meta = ft.use_state({})
+    
+    # State for delete confirmation dialog
+    deleting_file, set_deleting_file = ft.use_state(None)
+    
+    list_ref = ft.use_ref()
 
-    def refresh():
-        list_view.controls.clear()
-        meta = load_metadata(metadata_path)
+    def load_data():
+        loaded_meta = load_metadata(metadata_path)
+        set_meta(loaded_meta)
         try:
-            files = [
+            loaded_files = [
                 f for f in os.listdir(download_dir)
                 if f.lower().endswith(VIDEO_EXTENSIONS)
             ]
-            files.sort(
+            loaded_files.sort(
                 key=lambda x: os.path.getmtime(os.path.join(download_dir, x)),
                 reverse=True,
             )
+            set_files(loaded_files)
+        except Exception:
+            pass
 
-            if not files:
-                list_view.controls.append(
-                    ft.Container(
-                        content=ft.Column(
-                            controls=[
-                                ft.Icon(ft.Icons.VIDEO_LIBRARY_OUTLINED, size=48, color=ft.Colors.GREY_400),
-                                ft.Text("No downloads yet", color=ft.Colors.GREY, size=14),
-                            ],
-                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                            spacing=8,
-                        ),
-                        alignment=ft.Alignment(0, 0),
-                        expand=True,
-                        padding=40,
-                    )
+    # Run load_data on mount and whenever refresh_trigger increments
+    ft.use_effect(load_data, dependencies=[refresh_trigger])
+
+    # Restore scroll position once data loads
+    async def restore_scroll():
+        if initial_scroll > 0 and list_ref.current:
+            await asyncio.sleep(0.05)
+            try:
+                await list_ref.current.scroll_to(offset=initial_scroll, duration=0)
+                list_ref.current.update()
+            except Exception:
+                pass
+
+    ft.use_effect(restore_scroll, dependencies=[files])
+
+    def confirm_delete(e):
+        file_name = deleting_file
+        set_deleting_file(None)
+        
+        full_path = os.path.join(download_dir, file_name)
+        try:
+            if os.path.exists(full_path):
+                os.remove(full_path)
+            load_data()
+        except Exception:
+            pass
+
+    # Render Dialog Portal declaratively
+    ft.use_dialog(
+        ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Delete video?"),
+            content=ft.Text(f'Are you sure you want to delete "{deleting_file}"?'),
+            actions=[
+                ft.TextButton("No", on_click=lambda _: set_deleting_file(None)),
+                ft.TextButton("OK", on_click=confirm_delete),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        ) if deleting_file else None
+    )
+
+    list_controls = []
+    if not files:
+        list_controls.append(
+            ft.Container(
+                content=ft.Column(
+                    controls=[
+                        ft.Icon(ft.Icons.VIDEO_LIBRARY_OUTLINED, size=48, color=ft.Colors.GREY_400),
+                        ft.Text("No downloads yet", color=ft.Colors.GREY, size=14),
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=8,
+                ),
+                alignment=ft.Alignment(0, 0),
+                expand=True,
+                padding=40,
+            )
+        )
+    else:
+        for file_name in files:
+            list_controls.append(
+                VideoCard(
+                    file_name=file_name,
+                    download_dir=download_dir,
+                    meta=meta,
+                    on_play=on_play,
+                    on_delete=set_deleting_file
                 )
-            else:
-                for file_name in files:
-                    list_view.controls.append(
-                        build_video_card(file_name, download_dir, meta, on_play, on_delete)
-                    )
-        except Exception as exc:
-            list_view.controls.append(
-                ft.Text(f"Failed to index files: {exc}", color=ft.Colors.RED)
             )
 
-        page.update()
-
-    library_col = ft.Column(
-        controls=[list_view],
+    return ft.Column(
+        controls=[
+            ft.ListView(
+                ref=list_ref,
+                controls=list_controls,
+                expand=True,
+                spacing=0,
+                padding=0,
+                on_scroll=lambda e: on_scroll_change(e.pixels) if on_scroll_change else None,
+            )
+        ],
         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
         expand=True,
     )
-
-    return library_col, list_view, refresh

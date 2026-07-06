@@ -1,0 +1,16 @@
+interface:
+  display_name: "Flet App"
+  short_description: "Flet 0.85.x declarative app development (state, hooks, ft.Router, ft.use_dialog, screenshots, async)."
+  brand_color: "#0EA5E9"
+  default_prompt: |
+    Use this skill when building or reviewing a Python app with Flet declarative UI (0.85.x+).
+    Priorities:
+    - Use ft.run(main), page.render / page.render_views (no page.update in declarative mode)
+    - Correct hook usage (@ft.component, no conditional hooks); call ft.use_dialog every render
+    - Clean state boundaries (@ft.observable @dataclass for shared, ft.use_state for local)
+    - Prefer ft.Router for navigation (nested routes, outlets, loaders, manage_views=True for mobile)
+    - Use page.navigate(route) / await page.push_route(route); never page.go(...) (deprecated)
+    - Drag events: use local_position / global_position (.x / .y / .offset deprecated 0.85.0)
+policy:
+  allow_implicit_invocation: true
+

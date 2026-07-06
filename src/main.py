@@ -1,268 +1,322 @@
 """
-App entry point.
-
-Startup is intentionally front-loaded with only visible Home controls. Storage,
-permissions, library, downloader, and player code are wired after the first
-page render so the Home screen can appear as soon as Flet starts Python.
+main.py — Vidsaver app entry point.
+Refactored to use Flet's module-level declarative component architecture.
 """
 
 import os
 import asyncio
-
 import flet as ft
-
 
 ANDROID_STORAGE_ROOT = "/storage/emulated/0"
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".3gp")
 
+VIDEO_DOMAINS = (
+    "tiktok.com", "vm.tiktok.com", "vt.tiktok.com",
+    "instagram.com", "youtube.com", "youtu.be",
+    "twitter.com", "x.com", "facebook.com", "fb.com",
+)
 
-async def main(page: ft.Page):
-    loop = asyncio.get_running_loop()
-    page.title = "Vidsaver"
-    page.padding = 0
-    page.spacing = 0
-    page.safe_area = True
-    page.vertical_alignment = ft.MainAxisAlignment.CENTER
-    page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
-    page.appbar = ft.AppBar(
-        title=ft.Text("Vidsaver", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
-        center_title=True,
-        bgcolor=ft.Colors.BLUE_700,
-    )
 
-    url_input = ft.TextField(
-        label="Paste video link",
-        border_radius=12,
-        filled=True,
-        prefix_icon=ft.Icons.LINK,
-    )
-    status_text = ft.Text(value="", color=ft.Colors.BLUE_GREY, size=12)
-    progress_bar = ft.ProgressBar(
-        height=4,
-        value=None,
-        visible=False,
-        color=ft.Colors.BLUE,
-        bgcolor=ft.Colors.BLUE_100,
-        border_radius=4,
-    )
-    download_btn = ft.Button(
-        "Download",
-        icon=ft.Icons.DOWNLOAD_ROUNDED,
-        height=40,
-        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700, color=ft.Colors.WHITE),
+def is_video_url(text: str) -> bool:
+    if not text:
+        return False
+    value = text.strip()
+    return value.startswith(("http://", "https://")) and any(
+        domain in value for domain in VIDEO_DOMAINS
     )
 
-    home_form = ft.Column(
-        controls=[url_input, download_btn, progress_bar, status_text],
-        spacing=12,
-        horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
-    )
-    footer_text = ft.Text(
-        "Vidsaver made with ❤️ by Fazi Gondal",
-        size=16,
-        color=ft.Colors.BLUE_GREY,
-        text_align=ft.TextAlign.CENTER,
-    )
-    home_view = ft.Container(
+
+def ensure_storage_paths(page: ft.Page):
+    if getattr(page, "_download_dir", None):
+        return page._download_dir, page._metadata_path
+
+    is_android = os.path.exists(ANDROID_STORAGE_ROOT)
+    if is_android:
+        download_dir = os.path.join(ANDROID_STORAGE_ROOT, "Movies", "VidSaver")
+    else:
+        download_dir = (
+            os.path.join(os.environ["USERPROFILE"], "Downloads")
+            if "USERPROFILE" in os.environ else "./downloads"
+        )
+
+    os.makedirs(download_dir, exist_ok=True)
+    metadata_path = os.path.join(download_dir, ".metadata.json")
+    
+    page._download_dir = download_dir
+    page._metadata_path = metadata_path
+    return download_dir, metadata_path
+
+
+def ensure_permission_handler(page: ft.Page):
+    if not os.path.exists(ANDROID_STORAGE_ROOT):
+        return None, None
+    
+    if not hasattr(page, "_permission_handler"):
+        import flet_permission_handler as fph
+        handler = fph.PermissionHandler()
+        page.services.append(handler)
+        page._permission_handler = handler
+        page._permission_module = fph
+        page.update()
+        
+    return page._permission_handler, page._permission_module
+
+
+async def has_storage_access(page: ft.Page) -> bool:
+    if not os.path.exists(ANDROID_STORAGE_ROOT):
+        return True
+    handler, fph = ensure_permission_handler(page)
+    try:
+        status = await handler.get_status(fph.Permission.MANAGE_EXTERNAL_STORAGE)
+        return status == fph.PermissionStatus.GRANTED
+    except Exception:
+        return False
+
+
+async def request_storage_access(page: ft.Page) -> bool:
+    if not os.path.exists(ANDROID_STORAGE_ROOT):
+        return True
+    handler, fph = ensure_permission_handler(page)
+    try:
+        await handler.request(fph.Permission.MANAGE_EXTERNAL_STORAGE)
+    except Exception:
+        pass
+    return await has_storage_access(page)
+
+
+def scan_existing_downloads(page: ft.Page):
+    if not os.path.exists(ANDROID_STORAGE_ROOT):
+        return
+    try:
+        directory, _ = ensure_storage_paths(page)
+        paths = [
+            os.path.join(directory, name)
+            for name in os.listdir(directory)
+            if name.lower().endswith(VIDEO_EXTENSIONS)
+        ]
+        from downloader import scan_android_media
+        scan_android_media(paths)
+    except Exception:
+        pass
+
+
+def schedule_media_scan_later(page: ft.Page, paths: list[str]):
+    if not os.path.exists(ANDROID_STORAGE_ROOT):
+        return
+
+    async def delayed_scan():
+        from downloader import mark_files_recent, scan_android_media
+        for delay in (2, 8, 20):
+            await asyncio.sleep(delay)
+            await asyncio.to_thread(mark_files_recent, paths)
+            await asyncio.to_thread(scan_android_media, paths)
+
+    asyncio.create_task(delayed_scan())
+
+
+@ft.component
+def HomeView(
+    status_text_val: str,
+    progress_val: float | None,
+    progress_visible: bool,
+    download_disabled: bool,
+    on_download_click,
+    page: ft.Page
+):
+    """
+    Declarative home view component for downloading videos.
+    Manages local URL state and clipboard sync self-containedly.
+    """
+    url, set_url = ft.use_state("")
+
+    async def try_paste_clipboard():
+        try:
+            clip = await page.Clipboard().get()
+            if clip and is_video_url(clip):
+                if clip.strip() != url.strip():
+                    set_url(clip.strip())
+        except Exception:
+            pass
+
+    # Clipboard sync on resume lifecycle
+    def setup_lifecycle():
+        def on_lifecycle(e):
+            if e.state == ft.AppLifecycleState.RESUME:
+                asyncio.create_task(try_paste_clipboard())
+
+        old_handler = page.on_app_lifecycle_state_change
+        page.on_app_lifecycle_state_change = on_lifecycle
+        return lambda: setattr(page, "on_app_lifecycle_state_change", old_handler)
+
+    ft.use_effect(setup_lifecycle, dependencies=[url])
+
+    async def on_url_focus(e):
+        if not url:
+            await try_paste_clipboard()
+
+    def handle_submit(e):
+        if url.strip():
+            on_download_click(url.strip())
+
+    return ft.Container(
         content=ft.Column(
-            controls=[home_form, ft.Container(expand=True), footer_text],
-            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.TextField(
+                    value=url,
+                    on_change=lambda e: set_url(e.control.value),
+                    on_focus=lambda e: asyncio.create_task(on_url_focus(e)),
+                    on_submit=handle_submit,
+                    label="Paste video link",
+                    border_radius=12,
+                    filled=True,
+                    prefix_icon=ft.Icons.LINK,
+                ),
+                ft.Button(
+                    "Download",
+                    icon=ft.Icons.DOWNLOAD_ROUNDED,
+                    height=40,
+                    style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700, color=ft.Colors.WHITE),
+                    disabled=download_disabled,
+                    on_click=handle_submit,
+                ),
+                ft.ProgressBar(
+                    height=4,
+                    value=progress_val,
+                    visible=progress_visible,
+                    color=ft.Colors.BLUE,
+                    bgcolor=ft.Colors.BLUE_100,
+                    border_radius=4,
+                ),
+                ft.Text(value=status_text_val, color=ft.Colors.BLUE_GREY, size=12),
+                ft.Container(expand=True),
+                ft.Text(
+                    "Vidsaver made with ❤️ by Fazi Gondal",
+                    size=16,
+                    color=ft.Colors.BLUE_GREY,
+                    text_align=ft.TextAlign.CENTER,
+                ),
+            ],
+            spacing=12,
+            horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
         ),
         padding=ft.Padding(left=24, right=24, top=24, bottom=24),
         expand=True,
     )
-    main_container = ft.Container(content=home_view, expand=True)
-    nav_bar = ft.NavigationBar(
-        selected_index=0,
-        destinations=[
-            ft.NavigationBarDestination(icon=ft.Icons.HOME, label="Home"),
-            ft.NavigationBarDestination(icon=ft.Icons.DOWNLOAD, label="Downloads"),
-        ],
-    )
-    page.navigation_bar = nav_bar
-    page.add(ft.SafeArea(content=main_container, expand=True))
-    page.update()
-    await asyncio.sleep(0)
 
-    is_android = os.path.exists(ANDROID_STORAGE_ROOT)
-    download_dir = None
-    metadata_path = None
-    permission_handler = None
-    permission_module = None
-    library_view = None
-    refresh_downloads_list = None
-    player_view = None
-    video_control = None
-    player_title = None
-    close_btn = None
-    download_completed = False
 
-    video_domains = (
-        "tiktok.com", "vm.tiktok.com", "vt.tiktok.com",
-        "instagram.com", "youtube.com", "youtu.be",
-        "twitter.com", "x.com", "facebook.com", "fb.com",
-    )
+@ft.component
+def App(page: ft.Page):
+    """
+    Root declarative App component.
+    """
+    active_tab, set_active_tab = ft.use_state(0)
+    playing_file, set_playing_file = ft.use_state(None)
+    
+    status_text, set_status_text = ft.use_state("")
+    progress_val, set_progress_val = ft.use_state(None)
+    progress_visible, set_progress_visible = ft.use_state(False)
+    download_disabled, set_download_disabled = ft.use_state(False)
+    download_completed, set_download_completed = ft.use_state(False)
+    
+    refresh_trigger, set_refresh_trigger = ft.use_state(0)
+    scroll_offset, set_scroll_offset = ft.use_state(0)
 
-    def is_video_url(text: str) -> bool:
-        if not text:
-            return False
-        value = text.strip()
-        return value.startswith(("http://", "https://")) and any(
-            domain in value for domain in video_domains
-        )
+    # Sync Page UI (AppBar visibility) reactively
+    def sync_page_ui():
+        if page.appbar:
+            page.appbar.visible = not playing_file
+        page.update()
 
-    def ensure_storage_paths():
-        nonlocal download_dir, metadata_path
-        if download_dir:
-            return download_dir, metadata_path
+    ft.use_effect(sync_page_ui, dependencies=[playing_file])
 
-        if is_android:
-            download_dir = os.path.join(ANDROID_STORAGE_ROOT, "Movies", "VidSaver")
-        else:
-            download_dir = (
-                os.path.join(os.environ["USERPROFILE"], "Downloads")
-                if "USERPROFILE" in os.environ else "./downloads"
-            )
+    # Scan existing files on mount
+    def on_mounted_action():
+        async def run_initial_scan():
+            await asyncio.sleep(3)
+            await asyncio.to_thread(scan_existing_downloads, page)
+        asyncio.create_task(run_initial_scan())
+        
+    ft.use_effect(on_mounted_action, dependencies=[])
 
-        os.makedirs(download_dir, exist_ok=True)
-        metadata_path = os.path.join(download_dir, ".metadata.json")
-        return download_dir, metadata_path
-
-    def ensure_permission_handler():
-        nonlocal permission_handler, permission_module
-        if not is_android:
-            return None, None
-        if permission_handler is None:
-            import flet_permission_handler as fph
-
-            permission_module = fph
-            permission_handler = fph.PermissionHandler()
-            page.services.append(permission_handler)
-            page.update()
-        return permission_handler, permission_module
-
-    async def has_storage_access() -> bool:
-        if not is_android:
-            return True
-        handler, fph = ensure_permission_handler()
-        try:
-            status = await handler.get_status(fph.Permission.MANAGE_EXTERNAL_STORAGE)
-            return status == fph.PermissionStatus.GRANTED
-        except Exception:
-            return False
-
-    async def request_storage_access() -> bool:
-        if not is_android:
-            return True
-        handler, fph = ensure_permission_handler()
-        try:
-            await handler.request(fph.Permission.MANAGE_EXTERNAL_STORAGE)
-        except Exception:
-            pass
-        return await has_storage_access()
-
-    def scan_existing_downloads():
-        if not is_android:
-            return
-        try:
-            directory, _ = ensure_storage_paths()
-            paths = [
-                os.path.join(directory, name)
-                for name in os.listdir(directory)
-                if name.lower().endswith(VIDEO_EXTENSIONS)
-            ]
-            from downloader import scan_android_media
-
-            scan_android_media(paths)
-        except Exception:
-            pass
-
-    def schedule_media_scan_later(paths: list[str]):
-        if not is_android:
-            return
-
-        async def delayed_scan():
-            from downloader import mark_files_recent, scan_android_media
-
-            # Retry over 60 s — matches the window in which File Manager
-            # triggers MediaStore updates that WhatsApp / TikTok / Instagram
-            # pick up. Earlier retries catch fast devices; later ones catch
-            # devices that lazily update their media database.
-            for delay in (1, 3, 8, 20, 60):
-                await asyncio.sleep(delay)
-                await asyncio.to_thread(mark_files_recent, paths)
-                await asyncio.to_thread(scan_android_media, paths)
-
-        loop.call_soon_threadsafe(lambda: asyncio.create_task(delayed_scan()))
-
-    async def try_paste_clipboard():
-        try:
-            clip = await ft.Clipboard().get()
-            if clip and is_video_url(clip) and clip.strip() != (url_input.value or "").strip():
-                url_input.value = clip.strip()
-                page.update()
-        except Exception:
-            pass
-
-    async def on_url_focus(e):
-        if not url_input.value:
-            await try_paste_clipboard()
-
-    async def on_app_lifecycle(e):
-        if e.state == ft.AppLifecycleState.RESUME:
-            await try_paste_clipboard()
-
+    # Downloader wiring
     def set_download_busy(message: str):
-        nonlocal download_completed
-        download_completed = False
-        progress_bar.value = None
-        progress_bar.visible = True
-        status_text.value = message
-        page.update()
-
-    def on_progress(value):
-        progress_bar.value = value
-
-    def on_status(message):
-        nonlocal download_completed
-        if message.startswith("Downloading:"):
-            status_text.value = f"Downloading video... {int((progress_bar.value or 0) * 100)}%"
-        else:
-            status_text.value = message
-        if message in (
-            "Video saved and added to Gallery.",
-            "Video saved successfully.",
-            "Video saved. Gallery may update shortly.",
-        ):
-            download_completed = True
-
-    def on_finish():
-        progress_bar.visible = False
-        if refresh_downloads_list:
-            refresh_downloads_list()
-        if download_completed:
-            page.overlay.append(
-                ft.SnackBar(
-                    content=ft.Text("Video download complete"),
-                    open=True,
-                    duration=2500,
-                    behavior=ft.SnackBarBehavior.FLOATING,
-                    margin=ft.Margin(left=16, top=0, right=16, bottom=10),
-                )
-            )
-        page.update()
-
-    def on_error(message):
-        nonlocal download_completed
-        download_completed = False
-        status_text.value = f"Error: {message}"
+        set_download_completed(False)
+        set_progress_val(None)
+        set_progress_visible(True)
+        set_download_disabled(True)
+        set_status_text(message)
 
     def start_download(url: str):
-        directory, metadata = ensure_storage_paths()
-        cookie_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
-        from downloader import run_download
+        if not url:
+            set_status_text("Please enter a valid URL!")
+            return
+        
+        if not is_video_url(url):
+            set_status_text("Not a recognized or supported video link.")
+            return
 
-        async def download_worker():
+        async def download_flow():
+            has_access = await has_storage_access(page)
+            if not has_access:
+                set_status_text("Requesting storage permission...")
+                granted = await request_storage_access(page)
+                if not granted:
+                    set_status_text(
+                        "Storage permission denied. Enable 'All files access' "
+                        "for this app in Android Settings, then try again."
+                    )
+                    return
+            
+            set_download_busy("Fetching video...")
+            
+            directory, metadata = ensure_storage_paths(page)
+            cookie_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
+            from downloader import run_download
+
+            is_done = [False]
+
+            def on_status(message):
+                if message.startswith("Downloading:"):
+                    set_status_text("Downloading video...")
+                else:
+                    set_status_text(message)
+                if message in (
+                    "Video saved and added to Gallery.",
+                    "Video saved successfully.",
+                    "Video saved. Gallery may update shortly.",
+                ):
+                    is_done[0] = True
+                    set_download_completed(True)
+
+            def on_progress(value):
+                set_progress_val(value)
+
+            def on_error(message):
+                is_done[0] = False
+                set_download_completed(False)
+                set_status_text(f"Error: {message}")
+
+            def on_finish():
+                set_progress_visible(False)
+                set_download_disabled(False)
+                set_refresh_trigger(lambda prev: prev + 1)
+                if is_done[0]:
+                    page.overlay.append(
+                        ft.SnackBar(
+                            content=ft.Text("Video download complete"),
+                            open=True,
+                            duration=2500,
+                            behavior=ft.SnackBarBehavior.FLOATING,
+                            margin=ft.Margin(left=16, top=0, right=16, bottom=10),
+                        )
+                    )
+                    page.update()
+
+            # Pass a dummy page object to prevent background thread update conflicts
+            class DummyPage:
+                def update(self):
+                    pass
+
             await asyncio.to_thread(
                 run_download,
                 url,
@@ -273,149 +327,85 @@ async def main(page: ft.Page):
                 on_progress,
                 on_finish,
                 on_error,
-                page,
-                schedule_media_scan_later,
+                DummyPage(),
+                lambda paths: schedule_media_scan_later(page, paths),
             )
 
-        asyncio.create_task(download_worker())
+        asyncio.create_task(download_flow())
 
-    async def on_download_click(e):
-        url = (url_input.value or "").strip()
-        if not url:
-            status_text.value = "Please enter a valid URL!"
-            page.update()
-            return
-
-        if not await has_storage_access():
-            status_text.value = "Requesting storage permission..."
-            page.update()
-            granted = await request_storage_access()
-            if not granted:
-                status_text.value = (
-                    "Storage permission denied. Enable 'All files access' "
-                    "for this app in Android Settings, then try again."
-                )
-                page.update()
-                return
-
-        set_download_busy("Fetching video...")
-        start_download(url)
-
-    def ensure_library_view():
-        nonlocal library_view, refresh_downloads_list
-        if library_view is None:
-            directory, metadata = ensure_storage_paths()
-            from library import build_library_view
-
-            library_view, _, refresh_downloads_list = build_library_view(
-                download_dir=directory,
-                metadata_path=metadata,
-                on_play=play_video,
-                on_delete=delete_file,
-                page=page,
-            )
-        return library_view
-
-    async def close_player(e):
-        try:
-            if video_control:
-                await video_control.pause()
-        except Exception:
-            pass
-        main_container.content = ensure_library_view()
-        main_container.alignment = None
-        page.update()
-
-    def ensure_player_view():
-        nonlocal player_view, video_control, player_title, close_btn
-        if player_view is None:
-            from player import build_player_view
-
-            player_view, video_control, player_title, close_btn = build_player_view()
-            close_btn.on_click = close_player
-
-    def play_video(file_name: str):
-        nonlocal player_title, video_control, player_view
-        ensure_player_view()
-        directory, _ = ensure_storage_paths()
-        from player import make_video_media
-
-        player_title.value = file_name
-        video_control.playlist = [make_video_media(os.path.join(directory, file_name))]
-        main_container.content = player_view
-        main_container.alignment = None
-        page.update()
-        video_control.update()
-
-    def delete_file(file_name: str):
-        def close_dialog(e):
-            confirm_dialog.open = False
-            page.update()
-
-        def confirm_delete(e):
-            confirm_dialog.open = False
-            delete_confirmed_file(file_name)
-
-        confirm_dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Delete video?"),
-            content=ft.Text(f'Are you sure you want to delete "{file_name}"?'),
-            actions=[
-                ft.TextButton("No", on_click=close_dialog),
-                ft.TextButton("OK", on_click=confirm_delete),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
+    # Select view based on state
+    if playing_file:
+        from player import PlayerView
+        directory, _ = ensure_storage_paths(page)
+        full_path = os.path.join(directory, playing_file)
+        content_view = PlayerView(
+            file_path=full_path,
+            on_close=lambda e: set_playing_file(None)
         )
-        page.overlay.append(confirm_dialog)
-        confirm_dialog.open = True
-        page.update()
+    elif active_tab == 0:
+        content_view = HomeView(
+            status_text_val=status_text,
+            progress_val=progress_val,
+            progress_visible=progress_visible,
+            download_disabled=download_disabled,
+            on_download_click=start_download,
+            page=page
+        )
+    else:
+        from library import LibraryView
+        directory, metadata = ensure_storage_paths(page)
+        content_view = LibraryView(
+            download_dir=directory,
+            metadata_path=metadata,
+            on_play=set_playing_file,
+            initial_scroll=scroll_offset,
+            on_scroll_change=set_scroll_offset,
+            refresh_trigger=refresh_trigger
+        )
 
-    def delete_confirmed_file(file_name: str):
-        directory, _ = ensure_storage_paths()
-        full_path = os.path.join(directory, file_name)
-        try:
-            if os.path.exists(full_path):
-                os.remove(full_path)
-                page.overlay.append(ft.SnackBar(ft.Text(f"Deleted: {file_name}"), open=True))
-            else:
-                page.overlay.append(ft.SnackBar(ft.Text("File already removed."), open=True))
-            if refresh_downloads_list:
-                refresh_downloads_list()
-        except Exception as ex:
-            page.overlay.append(ft.SnackBar(ft.Text(f"Permission Error: {ex}"), open=True))
-        page.update()
+    return ft.SafeArea(
+        content=ft.Column(
+            controls=[
+                ft.Container(content=content_view, expand=True),
+                ft.NavigationBar(
+                    selected_index=active_tab,
+                    visible=not playing_file,
+                    on_change=lambda e: set_active_tab(e.control.selected_index),
+                    destinations=[
+                        ft.NavigationBarDestination(icon=ft.Icons.HOME, label="Home"),
+                        ft.NavigationBarDestination(icon=ft.Icons.DOWNLOAD, label="Downloads"),
+                    ],
+                )
+            ],
+            spacing=0,
+            expand=True
+        ),
+        expand=True
+    )
 
-    async def on_navigation_change(e):
-        idx = e.control.selected_index
-        if idx == 0:
-            main_container.content = home_view
-            main_container.alignment = None
-            page.update()
-            try:
-                if video_control:
-                    await video_control.pause()
-            except Exception:
-                pass
-        elif idx == 1:
-            view = ensure_library_view()
-            if refresh_downloads_list:
-                refresh_downloads_list()
-            main_container.content = view
-            main_container.alignment = None
-            page.update()
 
-    url_input.on_focus = on_url_focus
-    url_input.on_submit = on_download_click
-    download_btn.on_click = on_download_click
-    page.on_app_lifecycle_state_change = on_app_lifecycle
-    nav_bar.on_change = on_navigation_change
-    page.update()
+async def main(page: ft.Page):
+    page.title = "Vidsaver"
+    page.padding = 0
+    page.spacing = 0
+    page.safe_area = True
+    page.vertical_alignment = ft.MainAxisAlignment.CENTER
+    page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
+    page.theme = ft.Theme(
+        scrollbar_theme=ft.ScrollbarTheme(
+            thickness=6,
+            radius=4,
+            interactive=True,
+        )
+    )
+    page.navigation_bar = None
+    page.appbar = ft.AppBar(
+        title=ft.Text("Vidsaver", color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+        center_title=True,
+        bgcolor=ft.Colors.BLUE_700,
+    )
 
-    async def on_start():
-        await asyncio.sleep(3)
-        await asyncio.to_thread(scan_existing_downloads)
-
-    page.run_task(on_start)
+    page.render(App, page=page)
 
 
 ft.run(main)

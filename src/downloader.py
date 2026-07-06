@@ -93,124 +93,139 @@ def preload_heavy_modules():
     return
 
 
+def get_android_context():
+    """
+    Retrieve the Android Context/Activity. 
+    First looks at Serious Python environment configurations,
+    then common Python-to-Android framework classes, and falls back to ActivityThread.
+    """
+    import os
+    try:
+        from jnius import autoclass
+    except ImportError:
+        return None
+
+    context = None
+    
+    # 1. Try to get context via serious_python activity holder class (environment variable)
+    host_class = os.environ.get("MAIN_ACTIVITY_HOST_CLASS_NAME")
+    if host_class:
+        try:
+            PythonActivity = autoclass(host_class)
+            context = PythonActivity.mActivity
+        except Exception:
+            pass
+
+    # 2. Try common hardcoded class names
+    if not context:
+        for name in (
+            "com.flet.serious_python_android.PythonActivity",
+            "org.kivy.android.PythonActivity",
+            "org.renpy.android.PythonActivity"
+        ):
+            try:
+                PythonActivity = autoclass(name)
+                context = PythonActivity.mActivity
+                if context:
+                    break
+            except Exception:
+                pass
+
+    # 3. Fallback to ActivityThread
+    if not context:
+        try:
+            activity_thread = autoclass("android.app.ActivityThread")
+            app = activity_thread.currentApplication()
+            if app:
+                context = app.getApplicationContext()
+        except Exception:
+            pass
+
+    return context
+
+
 def scan_android_media(paths: list[str]) -> bool:
     """
     Ask Android to index newly saved media files so they appear in Gallery
-    and video player apps (WhatsApp, TikTok, Instagram) without waiting for
-    a device-wide media scan.
-
-    Strategy (each method tried in order, first success wins):
-      1. jnius MediaScannerConnection.scanFile()  — most reliable on API 29+
-      2. jnius ACTION_MEDIA_SCANNER_SCAN_FILE broadcast — API < 29 fallback
-      3. `am broadcast` shell: ACTION_MEDIA_SCANNER_SCAN_FILE per file
-      4. `am broadcast` shell: ACTION_MEDIA_CHANGED on parent directory
-         (triggers a directory-level rescan understood by modern Android)
+    and video player apps without waiting for a device-wide media scan.
     """
     file_paths = [path for path in paths if path and os.path.isfile(path)]
-    if not file_paths or not os.path.exists("/storage/emulated/0"):
-        return False
-
     dir_paths = sorted({
         os.path.dirname(path)
         for path in file_paths
         if os.path.isdir(os.path.dirname(path))
     })
+    scan_targets = file_paths + dir_paths
 
-    # ── 1. jnius MediaScannerConnection (recommended API 29+) ────────────────
+    if not file_paths or not os.path.exists("/storage/emulated/0"):
+        return False
+
+    context = get_android_context()
+    if not context:
+        return False
+
+    # Try static MediaScannerConnection.scanFile (batch)
     try:
         from jnius import autoclass
-        activity_thread = autoclass("android.app.ActivityThread")
-        context = activity_thread.currentApplication().getApplicationContext()
         media_scanner = autoclass("android.media.MediaScannerConnection")
-        paths_array = file_paths
         mime_types = [
-            mimetypes.guess_type(p)[0] or "video/mp4"
-            for p in paths_array
+            mimetypes.guess_type(path)[0] or "video/mp4"
+            for path in file_paths
         ]
-        media_scanner.scanFile(context, paths_array, mime_types, None)
+        media_scanner.scanFile(context, file_paths, mime_types, None)
         return True
     except Exception:
-        pass
+        # Fallback to scanning files individually if batch fails
+        try:
+            from jnius import autoclass
+            media_scanner = autoclass("android.media.MediaScannerConnection")
+            for path in file_paths:
+                mime = mimetypes.guess_type(path)[0] or "video/mp4"
+                media_scanner.scanFile(context, [path], [mime], None)
+            return True
+        except Exception:
+            pass
 
-    # ── 2. jnius broadcast (API < 29) ────────────────────────────────────────
+    # Try Intent broadcast fallback
     try:
         from jnius import autoclass
-        activity_thread = autoclass("android.app.ActivityThread")
-        context = activity_thread.currentApplication().getApplicationContext()
-        Intent = autoclass("android.content.Intent")
-        Uri = autoclass("android.net.Uri")
-        JavaFile = autoclass("java.io.File")
-        for path in file_paths:
+        intent = autoclass("android.content.Intent")
+        uri = autoclass("android.net.Uri")
+        java_file = autoclass("java.io.File")
+
+        for path in scan_targets:
             context.sendBroadcast(
-                Intent(
-                    Intent.ACTION_MEDIA_SCANNER_SCAN_FILE,
-                    Uri.fromFile(JavaFile(path)),
+                intent(
+                    intent.ACTION_MEDIA_SCANNER_SCAN_FILE,
+                    uri.fromFile(java_file(path)),
                 )
             )
         return True
     except Exception:
         pass
 
-    # ── 3. Shell: per-file scan broadcast ────────────────────────────────────
-    scanned = False
+    # Try subprocess fallback
     try:
-        for path in file_paths:
-            r = subprocess.run(
+        scanned = False
+        for path in scan_targets:
+            result = subprocess.run(
                 [
-                    "/system/bin/am", "broadcast",
-                    "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
-                    "-d", f"file://{quote(path)}",
+                    "/system/bin/am",
+                    "broadcast",
+                    "-a",
+                    "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                    "-d",
+                    f"file://{quote(path)}",
                 ],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=5,
             )
-            scanned = scanned or r.returncode == 0
+            scanned = scanned or result.returncode == 0
+        return scanned
     except Exception:
-        pass
-
-    # ── 4. Shell: directory-level ACTION_MEDIA_CHANGED (modern Android) ───────
-    # This is what the File Manager triggers — it signals that a directory
-    # changed and forces apps like WhatsApp/TikTok/Instagram to re-query.
-    try:
-        for d in dir_paths:
-            subprocess.run(
-                [
-                    "/system/bin/am", "broadcast",
-                    "-a", "android.intent.action.MEDIA_CHANGED",
-                    "-d", f"file://{quote(d)}",
-                ],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-            )
-    except Exception:
-        pass
-
-    # ── 5. Shell: touch files so mtime changes, then re-broadcast ─────────────
-    # Some devices only re-scan when the file's mtime is newer than the DB entry.
-    try:
-        now = time.time()
-        for path in file_paths:
-            os.utime(path, (now, now))
-        for path in file_paths:
-            subprocess.run(
-                [
-                    "/system/bin/am", "broadcast",
-                    "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
-                    "-d", f"file://{quote(path)}",
-                ],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-            )
-    except Exception:
-        pass
-
-    return scanned
+        return False
 
 
 def register_android_media_store(paths: list[str]) -> bool:
@@ -222,11 +237,12 @@ def register_android_media_store(paths: list[str]) -> bool:
     if not file_paths or not os.path.exists("/storage/emulated/0"):
         return False
 
+    context = get_android_context()
+    if not context:
+        return False
+
     try:
         from jnius import autoclass
-
-        activity_thread = autoclass("android.app.ActivityThread")
-        context = activity_thread.currentApplication().getApplicationContext()
         resolver = context.getContentResolver()
         content_values = autoclass("android.content.ContentValues")
         media_store_video = autoclass("android.provider.MediaStore$Video$Media")

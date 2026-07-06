@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "name": "flet-app",
+  "owner": "brunobrown",
+  "repo": "claude-flet-plugin",
+  "path": ".agents/skills/flet-app",
+  "branch": "main",
+  "sha": "2f4fceb0895646dd802f5461e7e52766d32479aa",
+  "source": "manual"
+}
