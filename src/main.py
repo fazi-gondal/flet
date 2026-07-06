@@ -387,19 +387,19 @@ async def main(page: ft.Page):
     page._loop = asyncio.get_running_loop()
     
     # Pre-initialize and cache storage paths asynchronously using Flet's StoragePaths service
-    try:
-        storage_paths = ft.StoragePaths()
-        downloads_dir = await storage_paths.get_downloads_directory()
-        if downloads_dir:
-            download_dir = os.path.join(downloads_dir, "VidSaver")
-        else:
-            download_dir = "./downloads"
-    except Exception:
-        # Fallback if unsupported or fails
-        is_android = os.path.exists(ANDROID_STORAGE_ROOT)
-        if is_android:
-            download_dir = os.path.join(ANDROID_STORAGE_ROOT, "Download", "VidSaver")
-        else:
+    is_android = os.path.exists(ANDROID_STORAGE_ROOT)
+    if is_android:
+        # Save directly to the public Download directory to bypass sandbox storage
+        download_dir = os.path.join(ANDROID_STORAGE_ROOT, "Download", "VidSaver")
+    else:
+        try:
+            storage_paths = ft.StoragePaths()
+            downloads_dir = await storage_paths.get_downloads_directory()
+            if downloads_dir:
+                download_dir = os.path.join(downloads_dir, "VidSaver")
+            else:
+                download_dir = "./downloads"
+        except Exception:
             download_dir = (
                 os.path.join(os.environ["USERPROFILE"], "Downloads")
                 if "USERPROFILE" in os.environ else "./downloads"
@@ -411,29 +411,6 @@ async def main(page: ft.Page):
     # Cache on page
     page._download_dir = download_dir
     page._metadata_path = metadata_path
-
-    # Trigger migrations from old Movies directory
-    is_android = os.path.exists(ANDROID_STORAGE_ROOT)
-    if is_android:
-        old_dir = os.path.join(ANDROID_STORAGE_ROOT, "Movies", "VidSaver")
-        if os.path.exists(old_dir):
-            old_metadata = os.path.join(old_dir, ".metadata.json")
-            if os.path.exists(old_metadata) and not os.path.exists(metadata_path):
-                try:
-                    import shutil
-                    shutil.copy2(old_metadata, metadata_path)
-                except Exception:
-                    pass
-            try:
-                for f in os.listdir(old_dir):
-                    if f.lower().endswith(VIDEO_EXTENSIONS):
-                        old_file = os.path.join(old_dir, f)
-                        new_file = os.path.join(download_dir, f)
-                        if os.path.exists(old_file) and not os.path.exists(new_file):
-                            import shutil
-                            shutil.move(old_file, new_file)
-            except Exception:
-                pass
 
     page.title = "Vidsaver"
     page.padding = 0

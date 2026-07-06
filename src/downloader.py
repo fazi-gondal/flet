@@ -121,6 +121,7 @@ def get_android_context():
     # 2. Try common hardcoded class names
     if not context:
         for name in (
+            "com.flet.serious_python.PythonActivity",
             "com.flet.serious_python_android.PythonActivity",
             "org.kivy.android.PythonActivity",
             "org.renpy.android.PythonActivity"
@@ -164,15 +165,25 @@ def scan_android_media(paths: list[str]) -> bool:
     # 1. Try static MediaScannerConnection.scanFile (batch)
     try:
         from jnius import autoclass
+        Array = autoclass('java.lang.reflect.Array')
+        String = autoclass('java.lang.String')
+        
+        # Explicitly construct a Java String[] array to avoid PyJNIus overload issues
+        paths_arr = Array.newInstance(String, len(file_paths))
+        for idx, path in enumerate(file_paths):
+            paths_arr[idx] = String(path)
+            
         media_scanner = autoclass("android.media.MediaScannerConnection")
         # Pass None for mimeTypes to let Android auto-detect type safely
-        media_scanner.scanFile(context, file_paths, None, None)
+        media_scanner.scanFile(context, paths_arr, None, None)
         scanned = True
     except Exception:
         # Fallback to scanning files individually if batch fails
         for path in file_paths:
             try:
-                media_scanner.scanFile(context, [path], None, None)
+                paths_arr = Array.newInstance(String, 1)
+                paths_arr[0] = String(path)
+                media_scanner.scanFile(context, paths_arr, None, None)
                 scanned = True
             except Exception:
                 pass
@@ -196,7 +207,7 @@ def scan_android_media(paths: list[str]) -> bool:
     except Exception:
         pass
 
-    # 3. Try subprocess fallback
+    # 3. Try subprocess fallback (including package targeting for Android 9+)
     try:
         for path in file_paths:
             try:
@@ -207,7 +218,9 @@ def scan_android_media(paths: list[str]) -> bool:
                         "-a",
                         "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
                         "-d",
-                        f"file://{quote(path)}",
+                        f"file://{path}",
+                        "-p",
+                        "com.android.providers.media",
                     ],
                     check=False,
                     stdout=subprocess.DEVNULL,
