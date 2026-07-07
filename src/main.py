@@ -147,11 +147,19 @@ def schedule_media_scan_later(page: ft.Page, paths: list[str]):
     if not paths:
         return
 
+    # Use the stored event loop — page.loop may not expose call_soon_threadsafe
+    loop = getattr(page, "_event_loop", None)
+    if loop is None:
+        print("[VidSaver] schedule_media_scan_later: no event loop stored, skipping")
+        return
+
     async def _scan_with_retry():
         scanner = getattr(page, "_media_scanner", None)
         if not scanner:
             print("[VidSaver] schedule_media_scan_later: no scanner, skipping")
             return
+
+        print(f"[VidSaver] scan starting for {len(paths)} file(s)")
 
         # Attempt 1 — immediately after download completes
         for path in paths:
@@ -170,8 +178,8 @@ def schedule_media_scan_later(page: ft.Page, paths: list[str]):
             except Exception as e:
                 print(f"[VidSaver] scan retry@3s error: {path}: {e}")
 
-    page.loop.call_soon_threadsafe(
-        lambda: page.loop.create_task(_scan_with_retry())
+    loop.call_soon_threadsafe(
+        lambda: loop.create_task(_scan_with_retry())
     )
 
 
@@ -306,7 +314,8 @@ def App(page: ft.Page):
     # Scan existing files on mount
     def on_mounted_action():
         async def run_initial_scan():
-            await asyncio.sleep(3)
+            # Wait for MediaScanner service to fully mount in Flutter engine
+            await asyncio.sleep(5)
             await scan_existing_downloads(page)
         asyncio.create_task(run_initial_scan())
         
@@ -443,7 +452,12 @@ def App(page: ft.Page):
 
 
 async def main(page: ft.Page):
-    # Pre-initialize and cache storage paths asynchronously using Flet's StoragePaths service
+    # Store event loop immediately — used by schedule_media_scan_later
+    # from background download threads via call_soon_threadsafe.
+    import asyncio as _asyncio
+    page._event_loop = _asyncio.get_running_loop()
+
+    # Pre-initialize and cache storage paths
     is_android = os.path.exists(ANDROID_STORAGE_ROOT)
     if is_android:
         # Save directly to the public Download directory to bypass sandbox storage
