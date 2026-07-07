@@ -1,5 +1,5 @@
 name: flet_media_scanner
-description: Flet extension for Android media scanner.
+description: Flet extension for Android media scanner using native MediaScannerConnection.
 version: 0.85.3
 publish_to: none
 
@@ -11,4 +11,10 @@ dependencies:
   flutter:
     sdk: flutter
   flet: ^0.85.0
-  media_scanner: ^2.1.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.example.flet_media_scanner
+        pluginClass: FletMediaScannerPlugin

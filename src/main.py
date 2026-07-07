@@ -170,8 +170,8 @@ def schedule_media_scan_later(page: ft.Page, paths: list[str]):
             except Exception as e:
                 print(f"[VidSaver] scan retry@3s error: {path}: {e}")
 
-    page._loop.call_soon_threadsafe(
-        lambda: page._loop.create_task(_scan_with_retry())
+    page.loop.call_soon_threadsafe(
+        lambda: page.loop.create_task(_scan_with_retry())
     )
 
 
@@ -351,29 +351,29 @@ def App(page: ft.Page):
 
             def on_status(message):
                 if message.startswith("Downloading:"):
-                    page._loop.call_soon_threadsafe(lambda: set_status_text("Downloading video..."))
+                    page.loop.call_soon_threadsafe(lambda: set_status_text("Downloading video..."))
                 else:
-                    page._loop.call_soon_threadsafe(lambda: set_status_text(message))
+                    page.loop.call_soon_threadsafe(lambda: set_status_text(message))
                 if message in (
                     "Video saved and added to Gallery.",
                     "Video saved successfully.",
                     "Video saved. Gallery may update shortly.",
                 ):
                     is_done[0] = True
-                    page._loop.call_soon_threadsafe(lambda: set_download_completed(True))
+                    page.loop.call_soon_threadsafe(lambda: set_download_completed(True))
 
             def on_progress(value):
-                page._loop.call_soon_threadsafe(lambda: set_progress_val(value))
+                page.loop.call_soon_threadsafe(lambda: set_progress_val(value))
 
             def on_error(message):
                 is_done[0] = False
-                page._loop.call_soon_threadsafe(lambda: set_download_completed(False))
-                page._loop.call_soon_threadsafe(lambda: set_status_text(f"Error: {message}"))
+                page.loop.call_soon_threadsafe(lambda: set_download_completed(False))
+                page.loop.call_soon_threadsafe(lambda: set_status_text(f"Error: {message}"))
 
             def on_finish():
-                page._loop.call_soon_threadsafe(lambda: set_progress_visible(False))
-                page._loop.call_soon_threadsafe(lambda: set_download_disabled(False))
-                page._loop.call_soon_threadsafe(lambda: set_refresh_trigger(lambda prev: prev + 1))
+                page.loop.call_soon_threadsafe(lambda: set_progress_visible(False))
+                page.loop.call_soon_threadsafe(lambda: set_download_disabled(False))
+                page.loop.call_soon_threadsafe(lambda: set_refresh_trigger(lambda prev: prev + 1))
                 if is_done[0]:
                     def show_snackbar():
                         page.overlay.append(
@@ -386,7 +386,7 @@ def App(page: ft.Page):
                             )
                         )
                         page.update()
-                    page._loop.call_soon_threadsafe(show_snackbar)
+                    page.loop.call_soon_threadsafe(show_snackbar)
 
             # Pass a dummy page object to prevent background thread update conflicts
             class DummyPage:
@@ -443,8 +443,6 @@ def App(page: ft.Page):
 
 
 async def main(page: ft.Page):
-    page._loop = asyncio.get_running_loop()
-    
     # Pre-initialize and cache storage paths asynchronously using Flet's StoragePaths service
     is_android = os.path.exists(ANDROID_STORAGE_ROOT)
     if is_android:
