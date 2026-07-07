@@ -32,14 +32,14 @@ jobs:
           # -------- Windows --------
           - name: windows
             runner: windows-latest
-            build_cmd: "flet build windows --pip-extra-args \"--find-links=./dist\""
+            build_cmd: "flet build windows --source-packages packages/flet-media-scanner"
             artifact_path: "build/windows"
             linux_deps: false
 
           # -------- Android APK (arm64-v8a only) --------
           - name: apk
             runner: ubuntu-latest
-            build_cmd: "flet build apk --split-per-abi --arch arm64-v8a --pip-extra-args \"--find-links=./dist\""
+            build_cmd: "flet build apk --split-per-abi --arch arm64-v8a --source-packages packages/flet-media-scanner"
             artifact_path: "build/apk"
             linux_deps: false
             android_signing: true
@@ -138,15 +138,6 @@ jobs:
           fi
 
           printf '%s' "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > upload-keystore.jks
-
-      - name: Build local package wheels
-        shell: bash
-        run: |
-          # Build a .whl for flet-media-scanner so serious_python's internal
-          # pip can install it via --find-links without hitting PyPI.
-          uv build --package flet-media-scanner --out-dir ./dist
-          echo "Built wheels:"
-          ls ./dist
 
       - name: Build application
         shell: bash

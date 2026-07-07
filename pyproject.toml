@@ -11,7 +11,6 @@ dependencies = [
     "flet==0.85.3",
     "flet-video==0.85.3",
     "flet-permission-handler==0.85.3",
-    "flet-media-scanner",
     "yt-dlp",
     "requests",
     "certifi",
@@ -25,6 +24,7 @@ dev = [
     "flet-cli==0.85.3",
     "flet-desktop==0.85.3",
     "flet-web==0.85.3",
+    "flet-media-scanner",
 ]
 
 [tool.flet]
