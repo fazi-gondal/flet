@@ -127,17 +127,94 @@ async def scan_existing_downloads(page: ft.Page):
 
         print(f"[VidSaver] scan_existing_downloads: scanning {len(paths)} files")
         scanner = getattr(page, "_media_scanner", None)
-        if scanner:
-            for path in paths:
+        for path in paths:
+            # Primary: native subprocess (always works, no JNI issues)
+            await _try_scan_subprocess(path)
+            # Bonus: Flet extension native Kotlin
+            if scanner:
                 try:
                     result = await scanner.scan_media(path)
-                    print(f"[VidSaver] scan_existing: {path} -> {result}")
+                    print(f"[VidSaver] ext-scan existing: {path} -> {result}")
                 except Exception as e:
-                    print(f"[VidSaver] scan_existing error: {path}: {e}")
-        else:
-            print("[VidSaver] scan_existing_downloads: no scanner available")
+                    print(f"[VidSaver] ext-scan existing error: {path}: {e}")
     except Exception as e:
         print(f"[VidSaver] scan_existing_downloads error: {e}")
+
+
+async def _try_scan_subprocess(path: str) -> bool:
+    """
+    Trigger Android MediaScannerConnection via shell commands.
+    Runs on the asyncio event loop — no JNI thread attachment needed.
+    Tries multiple methods for maximum Android version compatibility.
+    """
+    if not os.path.exists(path):
+        print(f"[VidSaver] _try_scan_subprocess: file not found: {path}")
+        return False
+
+    uri = f"file://{path}"
+
+    # Method 1: cmd media scan (Android 9+ / API 28+)
+    # This calls MediaScannerConnection.scanFile() internally.
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "/system/bin/cmd", "media", "scan", uri,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=8.0)
+            if proc.returncode == 0:
+                print(f"[VidSaver] cmd-scan OK: {path}")
+                return True
+        except asyncio.TimeoutError:
+            try: proc.kill()
+            except Exception: pass
+    except Exception as e:
+        print(f"[VidSaver] cmd-scan error: {e}")
+
+    # Method 2: am broadcast with new media provider (Android 10+)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "/system/bin/am", "broadcast",
+            "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+            "-d", uri,
+            "-p", "com.android.providers.media.module",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
+            if proc.returncode == 0:
+                print(f"[VidSaver] am-broadcast(module) OK: {path}")
+                return True
+        except asyncio.TimeoutError:
+            try: proc.kill()
+            except Exception: pass
+    except Exception as e:
+        print(f"[VidSaver] am-broadcast(module) error: {e}")
+
+    # Method 3: am broadcast without package filter (Android 5-9)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "/system/bin/am", "broadcast",
+            "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+            "-d", uri,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
+            if proc.returncode == 0:
+                print(f"[VidSaver] am-broadcast OK: {path}")
+                return True
+        except asyncio.TimeoutError:
+            try: proc.kill()
+            except Exception: pass
+    except Exception as e:
+        print(f"[VidSaver] am-broadcast error: {e}")
+
+    print(f"[VidSaver] _try_scan_subprocess: all methods failed for {path}")
+    return False
 
 
 def schedule_media_scan_later(page: ft.Page, paths: list[str]):
@@ -155,28 +232,30 @@ def schedule_media_scan_later(page: ft.Page, paths: list[str]):
 
     async def _scan_with_retry():
         scanner = getattr(page, "_media_scanner", None)
-        if not scanner:
-            print("[VidSaver] schedule_media_scan_later: no scanner, skipping")
-            return
-
-        print(f"[VidSaver] scan starting for {len(paths)} file(s)")
+        print(f"[VidSaver] scan starting for {len(paths)} file(s), scanner={'yes' if scanner else 'no'}")
 
         # Attempt 1 — immediately after download completes
         for path in paths:
-            try:
-                result = await scanner.scan_media(path)
-                print(f"[VidSaver] scan immediate: {path} -> {result}")
-            except Exception as e:
-                print(f"[VidSaver] scan immediate error: {path}: {e}")
+            # Primary: subprocess commands (reliable, no JNI)
+            await _try_scan_subprocess(path)
+            # Bonus: Flet extension (native Kotlin via MethodChannel)
+            if scanner:
+                try:
+                    result = await scanner.scan_media(path)
+                    print(f"[VidSaver] ext-scan immediate: {path} -> {result}")
+                except Exception as e:
+                    print(f"[VidSaver] ext-scan immediate error: {path}: {e}")
 
-        # Attempt 2 — after 3 seconds (file system flush may be needed)
+        # Attempt 2 — after 3 seconds (file system flush / MediaStore delay)
         await asyncio.sleep(3)
         for path in paths:
-            try:
-                result = await scanner.scan_media(path)
-                print(f"[VidSaver] scan retry@3s: {path} -> {result}")
-            except Exception as e:
-                print(f"[VidSaver] scan retry@3s error: {path}: {e}")
+            await _try_scan_subprocess(path)
+            if scanner:
+                try:
+                    result = await scanner.scan_media(path)
+                    print(f"[VidSaver] ext-scan retry@3s: {path} -> {result}")
+                except Exception as e:
+                    print(f"[VidSaver] ext-scan retry@3s error: {path}: {e}")
 
     loop.call_soon_threadsafe(
         lambda: loop.create_task(_scan_with_retry())

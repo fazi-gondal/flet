@@ -149,89 +149,71 @@ def get_android_context():
 
 def scan_android_media(paths: list[str]) -> bool:
     """
-    Ask Android to index newly saved media files so they appear in Gallery
-    and video player apps without waiting for a device-wide media scan.
+    Ask Android to index newly saved media files so they appear in Gallery.
+    Uses subprocess commands only — safe to call from any thread (no JNI needed).
+    subprocess.run creates a new OS process so thread attachment is irrelevant.
     """
     file_paths = [path for path in paths if path and os.path.isfile(path)]
     if not file_paths or not os.path.exists("/storage/emulated/0"):
         return False
 
-    context = get_android_context()
-    if not context:
-        return False
-
     scanned = False
 
-    # 1. Try static MediaScannerConnection.scanFile (batch)
-    try:
-        from jnius import autoclass
-        Array = autoclass('java.lang.reflect.Array')
-        String = autoclass('java.lang.String')
-        
-        # Explicitly construct a Java String[] array to avoid PyJNIus overload issues
-        paths_arr = Array.newInstance(String, len(file_paths))
-        for idx, path in enumerate(file_paths):
-            paths_arr[idx] = String(path)
-            
-        media_scanner = autoclass("android.media.MediaScannerConnection")
-        # Pass None for mimeTypes to let Android auto-detect type safely
-        media_scanner.scanFile(context, paths_arr, None, None)
-        scanned = True
-    except Exception:
-        # Fallback to scanning files individually if batch fails
-        for path in file_paths:
-            try:
-                paths_arr = Array.newInstance(String, 1)
-                paths_arr[0] = String(path)
-                media_scanner.scanFile(context, paths_arr, None, None)
+    for path in file_paths:
+        uri = f"file://{path}"
+
+        # Method 1: cmd media scan (Android 9+ / API 28+)
+        # Internally calls MediaScannerConnection.scanFile().
+        try:
+            result = subprocess.run(
+                ["/system/bin/cmd", "media", "scan", uri],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=8,
+            )
+            if result.returncode == 0:
                 scanned = True
-            except Exception:
-                pass
+                continue
+        except Exception:
+            pass
 
-    # 2. Try Intent broadcast fallback (with setter calls to avoid constructor overload issues)
-    try:
-        from jnius import autoclass
-        intent_class = autoclass("android.content.Intent")
-        uri_class = autoclass("android.net.Uri")
-        java_file_class = autoclass("java.io.File")
-
-        for path in file_paths:
-            try:
-                intent_obj = intent_class()
-                intent_obj.setAction(intent_class.ACTION_MEDIA_SCANNER_SCAN_FILE)
-                intent_obj.setData(uri_class.fromFile(java_file_class(path)))
-                context.sendBroadcast(intent_obj)
+        # Method 2: am broadcast with new media provider package (Android 10+)
+        try:
+            result = subprocess.run(
+                [
+                    "/system/bin/am", "broadcast",
+                    "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                    "-d", uri,
+                    "-p", "com.android.providers.media.module",
+                ],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            if result.returncode == 0:
                 scanned = True
-            except Exception:
-                pass
-    except Exception:
-        pass
+                continue
+        except Exception:
+            pass
 
-    # 3. Try subprocess fallback (including package targeting for Android 9+)
-    try:
-        for path in file_paths:
-            try:
-                result = subprocess.run(
-                    [
-                        "/system/bin/am",
-                        "broadcast",
-                        "-a",
-                        "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
-                        "-d",
-                        f"file://{path}",
-                        "-p",
-                        "com.android.providers.media",
-                    ],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=5,
-                )
-                scanned = scanned or result.returncode == 0
-            except Exception:
-                pass
-    except Exception:
-        pass
+        # Method 3: am broadcast without package filter (Android 5-9)
+        try:
+            result = subprocess.run(
+                [
+                    "/system/bin/am", "broadcast",
+                    "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
+                    "-d", uri,
+                ],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            scanned = scanned or result.returncode == 0
+        except Exception:
+            pass
 
     return scanned
 
