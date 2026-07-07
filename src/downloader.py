@@ -147,6 +147,19 @@ def get_android_context():
     return context
 
 
+def log_scan_attempt(message: str):
+    """Write scan logs to a local file in Download/VidSaver/ directory for easy mobile debugging."""
+    try:
+        log_dir = "/storage/emulated/0/Download/VidSaver"
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "media_scan_log.txt")
+        from datetime import datetime
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}\n")
+    except Exception:
+        pass
+
+
 _cmd_media_supported = None
 
 
@@ -166,6 +179,7 @@ def scan_android_media(paths: list[str]) -> bool:
 
     for path in file_paths:
         uri = f"file://{path}"
+        fname = os.path.basename(path)
 
         # Method 1: cmd media scan (Android 9+ / API 28+)
         if _cmd_media_supported is not False:
@@ -180,11 +194,14 @@ def scan_android_media(paths: list[str]) -> bool:
                 if result.returncode == 0:
                     scanned = True
                     _cmd_media_supported = True
+                    log_scan_attempt(f"bg-cmd-scan OK: {fname}")
                     continue
                 else:
+                    log_scan_attempt(f"bg-cmd-scan failed (code {result.returncode}) for {fname}: {stderr_text.strip()}")
                     if "Can't find service" in stderr_text or "not found" in stderr_text:
                         _cmd_media_supported = False
-            except Exception:
+            except Exception as e:
+                log_scan_attempt(f"bg-cmd-scan error for {fname}: {e}")
                 _cmd_media_supported = False
 
         # Method 2: am broadcast with new media provider package (Android 10+)

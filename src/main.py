@@ -111,6 +111,19 @@ async def request_storage_access(page: ft.Page) -> bool:
     return await has_storage_access(page)
 
 
+def log_scan_attempt(message: str):
+    """Write scan logs to a local file in Download/VidSaver/ directory for easy mobile debugging."""
+    try:
+        log_dir = os.path.join(ANDROID_STORAGE_ROOT, "Download", "VidSaver")
+        os.makedirs(log_dir, exist_ok=True)
+        log_path = os.path.join(log_dir, "media_scan_log.txt")
+        from datetime import datetime
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}\n")
+    except Exception:
+        pass
+
+
 async def scan_existing_downloads(page: ft.Page):
     """Scan all existing downloaded videos into Android MediaStore on startup."""
     if not os.path.exists(ANDROID_STORAGE_ROOT):
@@ -125,7 +138,7 @@ async def scan_existing_downloads(page: ft.Page):
         if not paths:
             return
 
-        print(f"[VidSaver] scan_existing_downloads: scanning {len(paths)} files")
+        log_scan_attempt(f"scan_existing_downloads: found {len(paths)} files")
         scanner = getattr(page, "_media_scanner", None)
         for path in paths:
             # Primary: native subprocess (always works, no JNI issues)
@@ -134,11 +147,13 @@ async def scan_existing_downloads(page: ft.Page):
             if scanner:
                 try:
                     result = await scanner.scan_media(path)
-                    print(f"[VidSaver] ext-scan existing: {path} -> {result}")
+                    log_scan_attempt(f"ext-scan existing: {os.path.basename(path)} -> {result}")
                 except Exception as e:
-                    print(f"[VidSaver] ext-scan existing error: {path}: {e}")
+                    log_scan_attempt(f"ext-scan existing error: {os.path.basename(path)}: {e}")
+            else:
+                log_scan_attempt("ext-scan existing: skipped (scanner is None)")
     except Exception as e:
-        print(f"[VidSaver] scan_existing_downloads error: {e}")
+        log_scan_attempt(f"scan_existing_downloads error: {e}")
 
 
 _cmd_media_supported = None
@@ -153,10 +168,11 @@ async def _try_scan_subprocess(path: str) -> bool:
     global _cmd_media_supported
 
     if not os.path.exists(path):
-        print(f"[VidSaver] _try_scan_subprocess: file not found: {path}")
+        log_scan_attempt(f"_try_scan_subprocess: file not found: {path}")
         return False
 
     uri = f"file://{path}"
+    fname = os.path.basename(path)
 
     # Method 1: cmd media scan (Android 9+ / API 28+)
     if _cmd_media_supported is not False:
@@ -171,18 +187,18 @@ async def _try_scan_subprocess(path: str) -> bool:
                 stderr_text = stderr_data.decode('utf-8', errors='ignore') if stderr_data else ""
                 
                 if proc.returncode == 0:
-                    print(f"[VidSaver] cmd-scan OK: {path}")
+                    log_scan_attempt(f"cmd-scan OK: {fname}")
                     _cmd_media_supported = True
                     return True
                 else:
-                    print(f"[VidSaver] cmd-scan failed (code {proc.returncode}): {stderr_text.strip()}")
+                    log_scan_attempt(f"cmd-scan failed (code {proc.returncode}) for {fname}: {stderr_text.strip()}")
                     if "Can't find service" in stderr_text or "not found" in stderr_text:
                         _cmd_media_supported = False
             except asyncio.TimeoutError:
                 try: proc.kill()
                 except Exception: pass
         except Exception as e:
-            print(f"[VidSaver] cmd-scan error: {e}")
+            log_scan_attempt(f"cmd-scan error for {fname}: {e}")
             _cmd_media_supported = False
 
     # Method 2: am broadcast with new media provider (Android 10+)
@@ -198,13 +214,13 @@ async def _try_scan_subprocess(path: str) -> bool:
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
             if proc.returncode == 0:
-                print(f"[VidSaver] am-broadcast(module) OK: {path}")
+                log_scan_attempt(f"am-broadcast(module) OK: {fname}")
                 return True
         except asyncio.TimeoutError:
             try: proc.kill()
             except Exception: pass
     except Exception as e:
-        print(f"[VidSaver] am-broadcast(module) error: {e}")
+        log_scan_attempt(f"am-broadcast(module) error for {fname}: {e}")
 
     # Method 3: am broadcast without package filter (Android 5-9)
     try:
@@ -218,15 +234,15 @@ async def _try_scan_subprocess(path: str) -> bool:
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
             if proc.returncode == 0:
-                print(f"[VidSaver] am-broadcast OK: {path}")
+                log_scan_attempt(f"am-broadcast OK: {fname}")
                 return True
         except asyncio.TimeoutError:
             try: proc.kill()
             except Exception: pass
     except Exception as e:
-        print(f"[VidSaver] am-broadcast error: {e}")
+        log_scan_attempt(f"am-broadcast error for {fname}: {e}")
 
-    print(f"[VidSaver] _try_scan_subprocess: all methods failed for {path}")
+    log_scan_attempt(f"_try_scan_subprocess: all methods failed for {fname}")
     return False
 
 
@@ -240,12 +256,12 @@ def schedule_media_scan_later(page: ft.Page, paths: list[str]):
     # Use the stored event loop — page.loop may not expose call_soon_threadsafe
     loop = getattr(page, "_event_loop", None)
     if loop is None:
-        print("[VidSaver] schedule_media_scan_later: no event loop stored, skipping")
+        log_scan_attempt("schedule_media_scan_later: no event loop stored, skipping")
         return
 
     async def _scan_with_retry():
         scanner = getattr(page, "_media_scanner", None)
-        print(f"[VidSaver] scan starting for {len(paths)} file(s), scanner={'yes' if scanner else 'no'}")
+        log_scan_attempt(f"scan starting for {len(paths)} file(s), scanner={'yes' if scanner else 'no'}")
 
         # Attempt 1 — immediately after download completes
         for path in paths:
@@ -255,9 +271,11 @@ def schedule_media_scan_later(page: ft.Page, paths: list[str]):
             if scanner:
                 try:
                     result = await scanner.scan_media(path)
-                    print(f"[VidSaver] ext-scan immediate: {path} -> {result}")
+                    log_scan_attempt(f"ext-scan immediate: {os.path.basename(path)} -> {result}")
                 except Exception as e:
-                    print(f"[VidSaver] ext-scan immediate error: {path}: {e}")
+                    log_scan_attempt(f"ext-scan immediate error: {os.path.basename(path)}: {e}")
+            else:
+                log_scan_attempt("ext-scan immediate: skipped (scanner is None)")
 
         # Attempt 2 — after 3 seconds (file system flush / MediaStore delay)
         await asyncio.sleep(3)
@@ -266,9 +284,11 @@ def schedule_media_scan_later(page: ft.Page, paths: list[str]):
             if scanner:
                 try:
                     result = await scanner.scan_media(path)
-                    print(f"[VidSaver] ext-scan retry@3s: {path} -> {result}")
+                    log_scan_attempt(f"ext-scan retry@3s: {os.path.basename(path)} -> {result}")
                 except Exception as e:
-                    print(f"[VidSaver] ext-scan retry@3s error: {path}: {e}")
+                    log_scan_attempt(f"ext-scan retry@3s error: {os.path.basename(path)}: {e}")
+            else:
+                log_scan_attempt("ext-scan retry@3s: skipped (scanner is None)")
 
     loop.call_soon_threadsafe(
         lambda: loop.create_task(_scan_with_retry())
