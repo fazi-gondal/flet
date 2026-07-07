@@ -32,14 +32,14 @@ jobs:
           # -------- Windows --------
           - name: windows
             runner: windows-latest
-            build_cmd: "flet build windows"
+            build_cmd: "flet build windows --source-packages packages/flet-media-scanner"
             artifact_path: "build/windows"
             linux_deps: false
 
           # -------- Android APK (arm64-v8a only) --------
           - name: apk
             runner: ubuntu-latest
-            build_cmd: "flet build apk --split-per-abi --arch arm64-v8a"
+            build_cmd: "flet build apk --split-per-abi --arch arm64-v8a --source-packages packages/flet-media-scanner"
             artifact_path: "build/apk"
             linux_deps: false
             android_signing: true
