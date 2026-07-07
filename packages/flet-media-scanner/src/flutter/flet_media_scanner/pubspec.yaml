@@ -11,4 +11,4 @@ dependencies:
   flutter:
     sdk: flutter
   flet: ^0.85.0
-  file_scan: ^1.0.3
+  media_scanner: ^2.1.0

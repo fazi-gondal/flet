@@ -63,15 +63,28 @@ def ensure_permission_handler(page: ft.Page):
 
 
 def ensure_media_scanner(page: ft.Page):
-    if not hasattr(page, "_media_scanner"):
-        try:
-            from flet_media_scanner import MediaScanner
-            scanner = MediaScanner()
-            page.services.append(scanner)
-            page._media_scanner = scanner
-            page.update()
-        except Exception:
-            page._media_scanner = None
+    """Initialize MediaScanner extension on Android only. Idempotent."""
+    if hasattr(page, "_media_scanner"):
+        return page._media_scanner
+
+    # Only initialize on Android — on other platforms page.platform may be
+    # ANDROID in a release build even on desktop if the check happens too early,
+    # so we use ANDROID_STORAGE_ROOT existence as a reliable guard.
+    if not os.path.exists(ANDROID_STORAGE_ROOT):
+        page._media_scanner = None
+        return None
+
+    try:
+        from flet_media_scanner import MediaScanner
+        scanner = MediaScanner()
+        page.services.append(scanner)
+        page._media_scanner = scanner
+        page.update()
+        print("[VidSaver] MediaScanner extension initialized")
+    except Exception as e:
+        print(f"[VidSaver] MediaScanner init failed: {e}")
+        page._media_scanner = None
+
     return page._media_scanner
 
 
@@ -99,6 +112,7 @@ async def request_storage_access(page: ft.Page) -> bool:
 
 
 async def scan_existing_downloads(page: ft.Page):
+    """Scan all existing downloaded videos into Android MediaStore on startup."""
     if not os.path.exists(ANDROID_STORAGE_ROOT):
         return
     try:
@@ -108,56 +122,57 @@ async def scan_existing_downloads(page: ft.Page):
             for name in os.listdir(directory)
             if name.lower().endswith(VIDEO_EXTENSIONS)
         ]
-        from downloader import register_android_media_store, mark_files_recent
-        await asyncio.to_thread(register_android_media_store, paths)
-        await asyncio.to_thread(mark_files_recent, paths)
-        
+        if not paths:
+            return
+
+        print(f"[VidSaver] scan_existing_downloads: scanning {len(paths)} files")
         scanner = getattr(page, "_media_scanner", None)
         if scanner:
             for path in paths:
                 try:
-                    await scanner.scan_media(path)
-                except Exception:
-                    pass
+                    result = await scanner.scan_media(path)
+                    print(f"[VidSaver] scan_existing: {path} -> {result}")
+                except Exception as e:
+                    print(f"[VidSaver] scan_existing error: {path}: {e}")
         else:
-            from downloader import scan_android_media
-            await asyncio.to_thread(scan_android_media, paths)
-    except Exception:
-        pass
+            print("[VidSaver] scan_existing_downloads: no scanner available")
+    except Exception as e:
+        print(f"[VidSaver] scan_existing_downloads error: {e}")
 
 
 def schedule_media_scan_later(page: ft.Page, paths: list[str]):
+    """Thread-safe: schedule a media scan from a background download thread."""
     if not os.path.exists(ANDROID_STORAGE_ROOT):
         return
+    if not paths:
+        return
 
-    async def scan_now_and_later():
-        # 1. Immediate scan using Flet extension if available
+    async def _scan_with_retry():
         scanner = getattr(page, "_media_scanner", None)
-        if scanner:
-            for path in paths:
-                try:
-                    await scanner.scan_media(path)
-                except Exception:
-                    pass
+        if not scanner:
+            print("[VidSaver] schedule_media_scan_later: no scanner, skipping")
+            return
 
-        # 2. Delayed background scanning/registering retries
-        from downloader import mark_files_recent, register_android_media_store
-        for delay in (2, 8, 20):
-            await asyncio.sleep(delay)
-            await asyncio.to_thread(register_android_media_store, paths)
-            await asyncio.to_thread(mark_files_recent, paths)
-            
-            if scanner:
-                for path in paths:
-                    try:
-                        await scanner.scan_media(path)
-                    except Exception:
-                        pass
-            else:
-                from downloader import scan_android_media
-                await asyncio.to_thread(scan_android_media, paths)
+        # Attempt 1 — immediately after download completes
+        for path in paths:
+            try:
+                result = await scanner.scan_media(path)
+                print(f"[VidSaver] scan immediate: {path} -> {result}")
+            except Exception as e:
+                print(f"[VidSaver] scan immediate error: {path}: {e}")
 
-    page._loop.call_soon_threadsafe(lambda: page._loop.create_task(scan_now_and_later()))
+        # Attempt 2 — after 3 seconds (file system flush may be needed)
+        await asyncio.sleep(3)
+        for path in paths:
+            try:
+                result = await scanner.scan_media(path)
+                print(f"[VidSaver] scan retry@3s: {path} -> {result}")
+            except Exception as e:
+                print(f"[VidSaver] scan retry@3s error: {path}: {e}")
+
+    page._loop.call_soon_threadsafe(
+        lambda: page._loop.create_task(_scan_with_retry())
+    )
 
 
 @ft.component
