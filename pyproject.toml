@@ -64,5 +64,7 @@ dependencies = [
 flet_media_scanner = "flet_media_scanner.Extension"
 
 [tool.uv.sources]
-flet-media-scanner = { path = "packages/flet-media-scanner", editable = true }
+flet-media-scanner = { workspace = true }
 
+[tool.uv.workspace]
+members = ["packages/flet-media-scanner"]
