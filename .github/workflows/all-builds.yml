@@ -94,6 +94,11 @@ jobs:
             pyproject.toml
             uv.lock
             packages/flet-media-scanner/pyproject.toml
+            packages/flet-media-scanner/src/flet_media_scanner/**/*.py
+            packages/flet-media-scanner/src/flutter/flet_media_scanner/lib/**/*.dart
+            packages/flet-media-scanner/src/flutter/flet_media_scanner/android/**/*.gradle
+            packages/flet-media-scanner/src/flutter/flet_media_scanner/android/**/*.kt
+            packages/flet-media-scanner/src/flutter/flet_media_scanner/android/**/*.xml
             packages/flet-media-scanner/src/flutter/flet_media_scanner/pubspec.yaml
 
       - name: Install Linux dependencies
