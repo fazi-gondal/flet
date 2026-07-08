@@ -2,7 +2,7 @@
 name = "flet-media-scanner"
 version = "0.85.3"
 description = "Flet extension for Android media scanner"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "flet>=0.85.0"
 ]
