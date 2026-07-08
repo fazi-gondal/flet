@@ -3,7 +3,7 @@ name = "vidsaver"
 version = "1.2.8"
 description = ""
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 authors = [
     { name = "Fazi-Gondal", email = "nextinpk@gmail.com" }
 ]
