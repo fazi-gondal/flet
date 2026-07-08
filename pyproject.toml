@@ -10,6 +10,7 @@ authors = [
 dependencies = [
     "flet==0.85.3",
     "flet-video==0.85.3",
+    "flet-media-scanner",
     "yt-dlp",
     "requests",
     "certifi",
@@ -23,7 +24,6 @@ dev = [
     "flet-cli==0.85.3",
     "flet-desktop==0.85.3",
     "flet-web==0.85.3",
-    "flet-media-scanner",
 ]
 
 [tool.flet]
@@ -49,6 +49,7 @@ dependencies = [
     "requests",
     "urllib3",
     "yt-dlp",
+    "flet-media-scanner",
 ]
 
 [tool.flet.android.permission]
@@ -56,6 +57,9 @@ dependencies = [
 
 [tool.flet.extensions]
 flet_media_scanner = "flet_media_scanner.Extension"
+
+[tool.flet.dev_packages]
+flet-media-scanner = "packages/flet-media-scanner"
 
 [tool.uv.sources]
 flet-media-scanner = { workspace = true }

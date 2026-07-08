@@ -5,8 +5,6 @@ from typing import Any, Optional
 
 import flet as ft
 
-_ANDROID_STORAGE_ROOT = "/storage/emulated/0"
-
 
 @dataclass
 class SaveResult:
@@ -32,9 +30,6 @@ class MediaScanner(ft.Service):
     on_saved: Optional[ft.EventHandler[Any]] = None
     on_scanned: Optional[ft.EventHandler[Any]] = None
 
-    def _is_android(self) -> bool:
-        return os.path.exists(_ANDROID_STORAGE_ROOT)
-
     async def save_video(
         self,
         file_path: str,
@@ -47,8 +42,6 @@ class MediaScanner(ft.Service):
         On Android 10+ this publishes to Movies/<album> without requiring
         broad storage permissions or a media scan.
         """
-        if not self._is_android():
-            return SaveResult(error="save_video is only supported on Android")
         if not file_path or not os.path.exists(file_path):
             return SaveResult(error=f"file does not exist: {file_path}")
 
@@ -83,8 +76,6 @@ class MediaScanner(ft.Service):
         New downloads should use save_video() instead; MediaStore inserts do
         not need this scan.
         """
-        if not self._is_android():
-            return False
         if not file_path or not os.path.exists(file_path):
             print(f"[MediaScanner] scan_media: file does not exist: {file_path}")
             return False

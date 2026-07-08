@@ -8,7 +8,6 @@ import tempfile
 
 import flet as ft
 
-ANDROID_STORAGE_ROOT = "/storage/emulated/0"
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".3gp")
 
 VIDEO_DOMAINS = (
@@ -25,8 +24,10 @@ VIDEO_DOMAINS = (
 )
 
 
-def is_android() -> bool:
-    return os.path.exists(ANDROID_STORAGE_ROOT)
+def is_android_page(page: ft.Page) -> bool:
+    platform = getattr(page, "platform", None)
+    platform_value = getattr(platform, "value", platform)
+    return platform == ft.PagePlatform.ANDROID or platform_value == "android"
 
 
 def is_video_url(text: str) -> bool:
@@ -44,7 +45,7 @@ def ensure_storage_paths(page: ft.Page):
 
     app_dir = os.path.dirname(os.path.abspath(__file__))
     metadata_path = os.path.join(app_dir, "metadata.json")
-    if is_android():
+    if is_android_page(page):
         download_dir = os.path.join(tempfile.gettempdir(), "vidsaver-staging")
     else:
         download_dir = (
@@ -64,8 +65,9 @@ def ensure_media_scanner(page: ft.Page):
     if hasattr(page, "_media_scanner"):
         return page._media_scanner
 
-    if not is_android():
+    if not is_android_page(page):
         page._media_scanner = None
+        page._media_scanner_error = ""
         return None
 
     try:
@@ -74,9 +76,11 @@ def ensure_media_scanner(page: ft.Page):
         scanner = MediaScanner()
         page.services.append(scanner)
         page._media_scanner = scanner
+        page._media_scanner_error = ""
         page.update()
         print("[VidSaver] MediaStore service initialized")
     except Exception as e:
+        page._media_scanner_error = str(e)
         print(f"[VidSaver] MediaStore service init failed: {e}")
         page._media_scanner = None
 
@@ -105,12 +109,18 @@ async def publish_download_result(page: ft.Page, download_result: dict, metadata
             "size": size,
         }
 
-        if is_android():
-            scanner = ensure_media_scanner(page)
-            if scanner is None:
-                last_error = "MediaStore service is not available."
-                continue
+        android = is_android_page(page)
+        scanner = ensure_media_scanner(page) if android else None
+        if android and scanner is None:
+            init_error = getattr(page, "_media_scanner_error", "")
+            last_error = (
+                f"MediaStore service is not available: {init_error}"
+                if init_error
+                else "MediaStore service is not available."
+            )
+            continue
 
+        if scanner is not None:
             result = await scanner.save_video(path, file_name=file_name, album="Vidsaver")
             if not result.success:
                 last_error = result.error or "MediaStore save failed."
