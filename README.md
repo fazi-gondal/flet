@@ -7,11 +7,11 @@ Vidsaver is a Flet-based video downloader for saving videos from supported socia
 ## Features
 
 - Download videos from common video URLs supported by `yt-dlp`.
-- Android downloads are saved to:
+- Android downloads are published through MediaStore to:
   ```text
-  /storage/emulated/0/Movies/VidSaver
+  Movies/Vidsaver
   ```
-- Saved Android videos are scanned so they can appear in Gallery and video player apps.
+- Android videos appear in Gallery without broad storage access or a media scan.
 - Downloads list with video metadata, file size, platform chip, play action, and delete confirmation.
 - Built-in video playback with `flet-video`.
 - Android APK release builds target `arm64-v8a`.
@@ -35,7 +35,7 @@ Vidsaver is a Flet-based video downloader for saving videos from supported socia
 - Python 3.10+
 - Flet
 - flet-video
-- flet-permission-handler
+- Local `flet-media-scanner` extension
 - yt-dlp
 - requests
 - uv
@@ -76,16 +76,11 @@ uv run flet run --web
 
 ## Android Permissions
 
-The app requests storage access on Android so downloads can be saved to the public Movies folder:
+The normal Android 13+ download flow does not request storage or media permissions. Vidsaver downloads into app-private staging storage, then publishes the finished video through Android MediaStore.
 
 ```toml
-"android.permission.MANAGE_EXTERNAL_STORAGE" = true
-"android.permission.READ_EXTERNAL_STORAGE" = true
-"android.permission.WRITE_EXTERNAL_STORAGE" = true
 "android.permission.INTERNET" = true
 ```
-
-If permission is denied, enable "All files access" for Vidsaver in Android Settings.
 
 ## Build Locally
 
@@ -112,8 +107,8 @@ The main release workflow is:
 It runs only when a version tag is pushed:
 
 ```bash
-git tag v1.2.5
-git push origin v1.2.5
+git tag v1.2.8
+git push origin v1.2.8
 ```
 
 Normal pushes to `main` do not run the heavy release build.
@@ -194,7 +189,7 @@ When a link is submitted:
 1. The app shows an active progress bar immediately.
 2. `yt-dlp` analyzes the URL.
 3. When download progress is available, the progress bar shows percentage.
-4. On Android, the saved file is scanned so Gallery/video players can detect it.
+4. On Android, the finished file is published to MediaStore under `Movies/Vidsaver`.
 
 Fast downloads may finish before much percentage progress is visible.
 
@@ -224,7 +219,7 @@ This is usually caused by a different signing key or a previous wrong ABI/split 
 
 ### Video Does Not Appear In Gallery
 
-The app saves to `Movies/VidSaver` and asks Android to scan the new file. Some Gallery apps may still take a short time to refresh their cache.
+The app saves through MediaStore to `Movies/Vidsaver`. Some Gallery apps may still take a short time to refresh their cache.
 
 ## Useful Links
 

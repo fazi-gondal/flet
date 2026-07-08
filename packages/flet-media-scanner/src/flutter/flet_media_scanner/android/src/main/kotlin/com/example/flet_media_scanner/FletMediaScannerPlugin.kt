@@ -1,23 +1,22 @@
 package com.example.flet_media_scanner
 
+import android.content.ContentValues
 import android.content.Context
-import android.media.MediaScannerConnection
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+import java.io.File
+import java.io.FileInputStream
+import java.net.URLConnection
 
-/**
- * FletMediaScannerPlugin
- *
- * Wraps Android's MediaScannerConnection.scanFile() so that newly downloaded
- * media files are immediately visible in the Gallery / Photos app without the
- * user having to open a File Manager to trigger an index refresh.
- */
 class FletMediaScannerPlugin : FlutterPlugin, MethodCallHandler {
-
     private lateinit var channel: MethodChannel
     private lateinit var context: Context
 
@@ -25,8 +24,6 @@ class FletMediaScannerPlugin : FlutterPlugin, MethodCallHandler {
         private const val TAG = "FletMediaScanner"
         private const val CHANNEL = "flet_media_scanner/scan"
     }
-
-    // ── FlutterPlugin lifecycle ──────────────────────────────────────────────
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         context = binding.applicationContext
@@ -40,52 +37,98 @@ class FletMediaScannerPlugin : FlutterPlugin, MethodCallHandler {
         Log.d(TAG, "onDetachedFromEngine")
     }
 
-    // ── MethodChannel handler ────────────────────────────────────────────────
-
     override fun onMethodCall(call: MethodCall, result: Result) {
-        Log.d(TAG, "onMethodCall: method=${call.method}")
-
         when (call.method) {
-            "scanFile" -> {
-                val path = call.argument<String>("path")
-                Log.d(TAG, "scanFile: path=$path")
+            "saveVideo" -> saveVideo(call, result)
+            else -> result.notImplemented()
+        }
+    }
 
-                if (path.isNullOrBlank()) {
-                    result.error("INVALID_ARGUMENT", "path must not be null or empty", null)
-                    return
+    private fun saveVideo(call: MethodCall, result: Result) {
+        val path = call.argument<String>("path")
+        val requestedFileName = call.argument<String>("fileName")
+        val album = call.argument<String>("album")
+            ?.trim()
+            ?.trim('/')
+            ?.takeIf { it.isNotBlank() }
+            ?: "Vidsaver"
+
+        if (path.isNullOrBlank()) {
+            result.error("INVALID_ARGUMENT", "path must not be null or empty", null)
+            return
+        }
+
+        val source = File(path)
+        if (!source.isFile) {
+            result.error("FILE_NOT_FOUND", "source file does not exist: $path", null)
+            return
+        }
+
+        val displayName = requestedFileName
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: source.name
+        val mimeType = URLConnection.guessContentTypeFromName(displayName) ?: "video/mp4"
+        val relativePath = "${Environment.DIRECTORY_MOVIES}/$album"
+        val resolver = context.contentResolver
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        } else {
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        }
+
+        var uri: Uri? = null
+        try {
+            val values = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
+                put(MediaStore.Video.Media.MIME_TYPE, mimeType)
+                put(MediaStore.Video.Media.DATE_ADDED, System.currentTimeMillis() / 1000)
+                put(MediaStore.Video.Media.DATE_MODIFIED, source.lastModified() / 1000)
+                put(MediaStore.Video.Media.SIZE, source.length())
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Video.Media.RELATIVE_PATH, relativePath)
+                    put(MediaStore.Video.Media.IS_PENDING, 1)
                 }
+            }
 
+            uri = resolver.insert(collection, values)
+                ?: throw IllegalStateException("MediaStore insert returned null")
+
+            resolver.openOutputStream(uri)?.use { output ->
+                FileInputStream(source).use { input ->
+                    input.copyTo(output)
+                }
+            } ?: throw IllegalStateException("Unable to open MediaStore output stream")
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val publishedValues = ContentValues().apply {
+                    put(MediaStore.Video.Media.IS_PENDING, 0)
+                    put(MediaStore.Video.Media.SIZE, source.length())
+                }
+                resolver.update(uri, publishedValues, null, null)
+            }
+
+            result.success(
+                mapOf(
+                    "success" to true,
+                    "content_uri" to uri.toString(),
+                    "display_name" to displayName,
+                    "mime_type" to mimeType,
+                    "relative_path" to relativePath,
+                    "source_path" to path,
+                    "size" to source.length(),
+                )
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "saveVideo: exception: ${e.message}", e)
+            uri?.let {
                 try {
-                    // MediaScannerConnection.scanFile() is the official Android API to
-                    // notify the MediaStore that a new file exists. This is exactly what
-                    // the File Manager does when it "refreshes" the media index.
-                    // The callback is invoked on the main thread.
-                    MediaScannerConnection.scanFile(
-                        context,
-                        arrayOf(path),
-                        null  // mimeType: null → let Android detect it from extension
-                    ) { scannedPath, uri ->
-                        Log.d(TAG, "scanFile complete: path=$scannedPath uri=$uri")
-                        if (uri != null) {
-                            result.success("scanned")
-                        } else {
-                            // uri being null usually means the file wasn't found or
-                            // isn't in a publicly accessible location. Still a "soft"
-                            // failure — don't crash.
-                            Log.w(TAG, "scanFile: uri is null for path=$scannedPath")
-                            result.success("failed")
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "scanFile: exception: ${e.message}", e)
-                    result.error("SCAN_ERROR", e.message, e.toString())
+                    resolver.delete(it, null, null)
+                } catch (deleteError: Exception) {
+                    Log.w(TAG, "saveVideo: failed to delete incomplete item: $deleteError")
                 }
             }
-
-            else -> {
-                Log.w(TAG, "onMethodCall: notImplemented for method=${call.method}")
-                result.notImplemented()
-            }
+            result.error("SAVE_ERROR", e.message, e.toString())
         }
     }
 }

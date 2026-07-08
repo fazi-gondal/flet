@@ -1,20 +1,32 @@
 """
-main.py — Vidsaver app entry point.
-Refactored to use Flet's module-level declarative component architecture.
+main.py - Vidsaver app entry point.
 """
 
-import os
 import asyncio
+import os
+import tempfile
+
 import flet as ft
 
 ANDROID_STORAGE_ROOT = "/storage/emulated/0"
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".3gp")
 
 VIDEO_DOMAINS = (
-    "tiktok.com", "vm.tiktok.com", "vt.tiktok.com",
-    "instagram.com", "youtube.com", "youtu.be",
-    "twitter.com", "x.com", "facebook.com", "fb.com",
+    "tiktok.com",
+    "vm.tiktok.com",
+    "vt.tiktok.com",
+    "instagram.com",
+    "youtube.com",
+    "youtu.be",
+    "twitter.com",
+    "x.com",
+    "facebook.com",
+    "fb.com",
 )
+
+
+def is_android() -> bool:
+    return os.path.exists(ANDROID_STORAGE_ROOT)
 
 
 def is_video_url(text: str) -> bool:
@@ -30,269 +42,100 @@ def ensure_storage_paths(page: ft.Page):
     if getattr(page, "_download_dir", None):
         return page._download_dir, page._metadata_path
 
-    is_android = os.path.exists(ANDROID_STORAGE_ROOT)
-    if is_android:
-        download_dir = os.path.join(ANDROID_STORAGE_ROOT, "Download", "VidSaver")
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    metadata_path = os.path.join(app_dir, "metadata.json")
+    if is_android():
+        download_dir = os.path.join(tempfile.gettempdir(), "vidsaver-staging")
     else:
         download_dir = (
-            os.path.join(os.environ["USERPROFILE"], "Downloads")
-            if "USERPROFILE" in os.environ else "./downloads"
+            os.path.join(os.environ["USERPROFILE"], "Downloads", "VidSaver")
+            if "USERPROFILE" in os.environ
+            else "./downloads"
         )
 
     os.makedirs(download_dir, exist_ok=True)
-    metadata_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.json")
-    
     page._download_dir = download_dir
     page._metadata_path = metadata_path
     return download_dir, metadata_path
 
 
-def ensure_permission_handler(page: ft.Page):
-    if not os.path.exists(ANDROID_STORAGE_ROOT):
-        return None, None
-    
-    if not hasattr(page, "_permission_handler"):
-        import flet_permission_handler as fph
-        handler = fph.PermissionHandler()
-        page.services.append(handler)
-        page._permission_handler = handler
-        page._permission_module = fph
-        page.update()
-        
-    return page._permission_handler, page._permission_module
-
-
 def ensure_media_scanner(page: ft.Page):
-    """Initialize MediaScanner extension on Android only. Idempotent."""
+    """Initialize the local media service on Android only."""
     if hasattr(page, "_media_scanner"):
         return page._media_scanner
 
-    # Only initialize on Android — on other platforms page.platform may be
-    # ANDROID in a release build even on desktop if the check happens too early,
-    # so we use ANDROID_STORAGE_ROOT existence as a reliable guard.
-    if not os.path.exists(ANDROID_STORAGE_ROOT):
+    if not is_android():
         page._media_scanner = None
         return None
 
     try:
         from flet_media_scanner import MediaScanner
+
         scanner = MediaScanner()
         page.services.append(scanner)
         page._media_scanner = scanner
         page.update()
-        print("[VidSaver] MediaScanner extension initialized")
+        print("[VidSaver] MediaStore service initialized")
     except Exception as e:
-        print(f"[VidSaver] MediaScanner init failed: {e}")
+        print(f"[VidSaver] MediaStore service init failed: {e}")
         page._media_scanner = None
 
     return page._media_scanner
 
 
+async def publish_download_result(page: ft.Page, download_result: dict, metadata_path: str):
+    """Publish staged downloads to MediaStore on Android and update metadata."""
+    from downloader import load_metadata, save_metadata
 
-async def has_storage_access(page: ft.Page) -> bool:
-    if not os.path.exists(ANDROID_STORAGE_ROOT):
-        return True
-    handler, fph = ensure_permission_handler(page)
-    try:
-        status = await handler.get_status(fph.Permission.MANAGE_EXTERNAL_STORAGE)
-        return status == fph.PermissionStatus.GRANTED
-    except Exception:
-        return False
+    if not download_result or not download_result.get("paths"):
+        return False, "No video file was saved."
 
+    meta = load_metadata(metadata_path)
+    published = 0
+    last_error = ""
 
-async def request_storage_access(page: ft.Page) -> bool:
-    if not os.path.exists(ANDROID_STORAGE_ROOT):
-        return True
-    handler, fph = ensure_permission_handler(page)
-    try:
-        await handler.request(fph.Permission.MANAGE_EXTERNAL_STORAGE)
-    except Exception:
-        pass
-    return await has_storage_access(page)
+    for path in download_result["paths"]:
+        file_name = os.path.basename(path)
+        size = os.path.getsize(path) if os.path.exists(path) else 0
+        entry = {
+            "platform": download_result["platform"],
+            "url": download_result["url"],
+            "date": download_result["date"],
+            "source_path": path,
+            "size": size,
+        }
 
+        if is_android():
+            scanner = ensure_media_scanner(page)
+            if scanner is None:
+                last_error = "MediaStore service is not available."
+                continue
 
-def log_scan_attempt(message: str):
-    """Write scan logs to a local file in Download/VidSaver/ directory for easy mobile debugging."""
-    try:
-        log_dir = os.path.join(ANDROID_STORAGE_ROOT, "Download", "VidSaver")
-        os.makedirs(log_dir, exist_ok=True)
-        log_path = os.path.join(log_dir, "media_scan_log.txt")
-        from datetime import datetime
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}\n")
-    except Exception:
-        pass
+            result = await scanner.save_video(path, file_name=file_name, album="Vidsaver")
+            if not result.success:
+                last_error = result.error or "MediaStore save failed."
+                continue
 
-
-async def scan_existing_downloads(page: ft.Page):
-    """Scan all existing downloaded videos into Android MediaStore on startup."""
-    if not os.path.exists(ANDROID_STORAGE_ROOT):
-        return
-    try:
-        directory, _ = ensure_storage_paths(page)
-        paths = [
-            os.path.join(directory, name)
-            for name in os.listdir(directory)
-            if name.lower().endswith(VIDEO_EXTENSIONS)
-        ]
-        if not paths:
-            return
-
-        log_scan_attempt(f"scan_existing_downloads: found {len(paths)} files")
-        scanner = getattr(page, "_media_scanner", None)
-        for path in paths:
-            # Primary: native subprocess (always works, no JNI issues)
-            await _try_scan_subprocess(path)
-            # Bonus: Flet extension native Kotlin
-            if scanner:
-                try:
-                    result = await scanner.scan_media(path)
-                    log_scan_attempt(f"ext-scan existing: {os.path.basename(path)} -> {result}")
-                except Exception as e:
-                    log_scan_attempt(f"ext-scan existing error: {os.path.basename(path)}: {e}")
-            else:
-                log_scan_attempt("ext-scan existing: skipped (scanner is None)")
-    except Exception as e:
-        log_scan_attempt(f"scan_existing_downloads error: {e}")
-
-
-_cmd_media_supported = None
-
-
-async def _try_scan_subprocess(path: str) -> bool:
-    """
-    Trigger Android MediaScannerConnection via shell commands.
-    Runs on the asyncio event loop — no JNI thread attachment needed.
-    Tries multiple methods for maximum Android version compatibility.
-    """
-    global _cmd_media_supported
-
-    if not os.path.exists(path):
-        log_scan_attempt(f"_try_scan_subprocess: file not found: {path}")
-        return False
-
-    uri = f"file://{path}"
-    fname = os.path.basename(path)
-
-    # Method 1: cmd media scan (Android 9+ / API 28+)
-    if _cmd_media_supported is not False:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "/system/bin/cmd", "media", "scan", uri,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
+            display_name = result.display_name or file_name
+            entry.update(
+                {
+                    "content_uri": result.content_uri,
+                    "display_name": display_name,
+                    "mime_type": result.mime_type,
+                    "relative_path": result.relative_path,
+                    "size": result.size or size,
+                }
             )
-            try:
-                stdout_data, stderr_data = await asyncio.wait_for(proc.communicate(), timeout=8.0)
-                stderr_text = stderr_data.decode('utf-8', errors='ignore') if stderr_data else ""
-                
-                if proc.returncode == 0:
-                    log_scan_attempt(f"cmd-scan OK: {fname}")
-                    _cmd_media_supported = True
-                    return True
-                else:
-                    log_scan_attempt(f"cmd-scan failed (code {proc.returncode}) for {fname}: {stderr_text.strip()}")
-                    if "Can't find service" in stderr_text or "not found" in stderr_text:
-                        _cmd_media_supported = False
-            except asyncio.TimeoutError:
-                try: proc.kill()
-                except Exception: pass
-        except Exception as e:
-            log_scan_attempt(f"cmd-scan error for {fname}: {e}")
-            _cmd_media_supported = False
+            meta[display_name] = entry
+        else:
+            meta[file_name] = entry
 
-    # Method 2: am broadcast with new media provider (Android 10+)
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "/system/bin/am", "broadcast",
-            "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
-            "-d", uri,
-            "-p", "com.android.providers.media.module",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-            if proc.returncode == 0:
-                log_scan_attempt(f"am-broadcast(module) OK: {fname}")
-                return True
-        except asyncio.TimeoutError:
-            try: proc.kill()
-            except Exception: pass
-    except Exception as e:
-        log_scan_attempt(f"am-broadcast(module) error for {fname}: {e}")
+        published += 1
 
-    # Method 3: am broadcast without package filter (Android 5-9)
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "/system/bin/am", "broadcast",
-            "-a", "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
-            "-d", uri,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-            if proc.returncode == 0:
-                log_scan_attempt(f"am-broadcast OK: {fname}")
-                return True
-        except asyncio.TimeoutError:
-            try: proc.kill()
-            except Exception: pass
-    except Exception as e:
-        log_scan_attempt(f"am-broadcast error for {fname}: {e}")
-
-    log_scan_attempt(f"_try_scan_subprocess: all methods failed for {fname}")
-    return False
-
-
-def schedule_media_scan_later(page: ft.Page, paths: list[str]):
-    """Thread-safe: schedule a media scan from a background download thread."""
-    if not os.path.exists(ANDROID_STORAGE_ROOT):
-        return
-    if not paths:
-        return
-
-    # Use the stored event loop — page.loop may not expose call_soon_threadsafe
-    loop = getattr(page, "_event_loop", None)
-    if loop is None:
-        log_scan_attempt("schedule_media_scan_later: no event loop stored, skipping")
-        return
-
-    async def _scan_with_retry():
-        scanner = getattr(page, "_media_scanner", None)
-        log_scan_attempt(f"scan starting for {len(paths)} file(s), scanner={'yes' if scanner else 'no'}")
-
-        # Attempt 1 — immediately after download completes
-        for path in paths:
-            # Primary: subprocess commands (reliable, no JNI)
-            await _try_scan_subprocess(path)
-            # Bonus: Flet extension (native Kotlin via MethodChannel)
-            if scanner:
-                try:
-                    result = await scanner.scan_media(path)
-                    log_scan_attempt(f"ext-scan immediate: {os.path.basename(path)} -> {result}")
-                except Exception as e:
-                    log_scan_attempt(f"ext-scan immediate error: {os.path.basename(path)}: {e}")
-            else:
-                log_scan_attempt("ext-scan immediate: skipped (scanner is None)")
-
-        # Attempt 2 — after 3 seconds (file system flush / MediaStore delay)
-        await asyncio.sleep(3)
-        for path in paths:
-            await _try_scan_subprocess(path)
-            if scanner:
-                try:
-                    result = await scanner.scan_media(path)
-                    log_scan_attempt(f"ext-scan retry@3s: {os.path.basename(path)} -> {result}")
-                except Exception as e:
-                    log_scan_attempt(f"ext-scan retry@3s error: {os.path.basename(path)}: {e}")
-            else:
-                log_scan_attempt("ext-scan retry@3s: skipped (scanner is None)")
-
-    loop.call_soon_threadsafe(
-        lambda: loop.create_task(_scan_with_retry())
-    )
+    if published:
+        save_metadata(metadata_path, meta)
+        return True, ""
+    return False, last_error or "Unable to publish video to Gallery."
 
 
 @ft.component
@@ -302,24 +145,19 @@ def HomeView(
     progress_visible: bool,
     download_disabled: bool,
     on_download_click,
-    page: ft.Page
+    page: ft.Page,
 ):
-    """
-    Declarative home view component for downloading videos.
-    Manages local URL state and clipboard sync self-containedly.
-    """
+    """Declarative home view component for downloading videos."""
     url, set_url = ft.use_state("")
 
     async def try_paste_clipboard():
         try:
             clip = await ft.Clipboard().get()
-            if clip and is_video_url(clip):
-                if clip.strip() != url.strip():
-                    set_url(clip.strip())
+            if clip and is_video_url(clip) and clip.strip() != url.strip():
+                set_url(clip.strip())
         except Exception:
             pass
 
-    # Clipboard sync on resume lifecycle
     def setup_lifecycle():
         def on_lifecycle(e):
             if e.state == ft.AppLifecycleState.RESUME:
@@ -371,7 +209,7 @@ def HomeView(
                 ft.Text(value=status_text_val, color=ft.Colors.BLUE_GREY, size=12),
                 ft.Container(height=40),
                 ft.Text(
-                    "Vidsaver made with ❤️ by Fazi Gondal",
+                    "Vidsaver made with love by Fazi Gondal",
                     size=16,
                     color=ft.Colors.BLUE_GREY,
                     text_align=ft.TextAlign.CENTER,
@@ -388,52 +226,42 @@ def HomeView(
 
 @ft.component
 def App(page: ft.Page):
-    """
-    Root declarative App component.
-    """
+    """Root declarative App component."""
     active_tab, set_active_tab = ft.use_state(0)
     playing_file, set_playing_file = ft.use_state(None)
-    
+
     status_text, set_status_text = ft.use_state("")
     progress_val, set_progress_val = ft.use_state(None)
     progress_visible, set_progress_visible = ft.use_state(False)
     download_disabled, set_download_disabled = ft.use_state(False)
     download_completed, set_download_completed = ft.use_state(False)
-    
+
     refresh_trigger, set_refresh_trigger = ft.use_state(0)
     scroll_offset, set_scroll_offset = ft.use_state(0)
 
-    # Sync Page UI (AppBar & NavigationBar) reactively
     def sync_page_ui():
         if page.appbar:
             page.appbar.visible = not playing_file
-        
+
         if playing_file:
             page.navigation_bar = None
         else:
             page.navigation_bar = ft.NavigationBar(
+                bgcolor=ft.Colors.WHITE_10,
                 selected_index=active_tab,
                 on_change=lambda e: set_active_tab(e.control.selected_index),
                 destinations=[
-                    ft.NavigationBarDestination(icon=ft.Icons.HOME, label="Home"),
-                    ft.NavigationBarDestination(icon=ft.Icons.DOWNLOAD, label="Downloads"),
+                    ft.NavigationBarDestination(icon=ft.Icons.HOME_FILLED, label="Home"),
+                    ft.NavigationBarDestination(
+                        icon=ft.Icons.FILE_DOWNLOAD_ROUNDED,
+                        label="Downloads",
+                    ),
                 ],
             )
         page.update()
 
     ft.use_effect(sync_page_ui, dependencies=[playing_file, active_tab])
 
-    # Scan existing files on mount
-    def on_mounted_action():
-        async def run_initial_scan():
-            # Wait for MediaScanner service to fully mount in Flutter engine
-            await asyncio.sleep(5)
-            await scan_existing_downloads(page)
-        asyncio.create_task(run_initial_scan())
-        
-    ft.use_effect(on_mounted_action, dependencies=[])
-
-    # Downloader wiring
     def set_download_busy(message: str):
         set_download_completed(False)
         set_progress_val(None)
@@ -441,80 +269,62 @@ def App(page: ft.Page):
         set_download_disabled(True)
         set_status_text(message)
 
+    def finish_download(is_done: bool):
+        set_progress_visible(False)
+        set_download_disabled(False)
+        set_refresh_trigger(lambda prev: prev + 1)
+        if is_done:
+            page.overlay.append(
+                ft.SnackBar(
+                    content=ft.Text("Video download complete"),
+                    open=True,
+                    duration=2500,
+                    behavior=ft.SnackBarBehavior.FLOATING,
+                    margin=ft.Margin(left=16, top=0, right=16, bottom=10),
+                )
+            )
+            page.update()
+
     def start_download(url: str):
         if not url:
             set_status_text("Please enter a valid URL!")
             return
-        
+
         if not is_video_url(url):
             set_status_text("Not a recognized or supported video link.")
             return
 
         async def download_flow():
-            has_access = await has_storage_access(page)
-            if not has_access:
-                set_status_text("Requesting storage permission...")
-                granted = await request_storage_access(page)
-                if not granted:
-                    set_status_text(
-                        "Storage permission denied. Enable 'All files access' "
-                        "for this app in Android Settings, then try again."
-                    )
-                    return
-            
             set_download_busy("Fetching video...")
-            
+
             directory, metadata = ensure_storage_paths(page)
             cookie_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt")
             from downloader import run_download
 
-            is_done = [False]
+            had_error = [False]
 
             def on_status(message):
                 if message.startswith("Downloading:"):
                     page.loop.call_soon_threadsafe(lambda: set_status_text("Downloading video..."))
                 else:
                     page.loop.call_soon_threadsafe(lambda: set_status_text(message))
-                if message in (
-                    "Video saved and added to Gallery.",
-                    "Video saved successfully.",
-                    "Video saved. Gallery may update shortly.",
-                ):
-                    is_done[0] = True
-                    page.loop.call_soon_threadsafe(lambda: set_download_completed(True))
 
             def on_progress(value):
                 page.loop.call_soon_threadsafe(lambda: set_progress_val(value))
 
             def on_error(message):
-                is_done[0] = False
+                had_error[0] = True
                 page.loop.call_soon_threadsafe(lambda: set_download_completed(False))
                 page.loop.call_soon_threadsafe(lambda: set_status_text(f"Error: {message}"))
 
             def on_finish():
-                page.loop.call_soon_threadsafe(lambda: set_progress_visible(False))
-                page.loop.call_soon_threadsafe(lambda: set_download_disabled(False))
-                page.loop.call_soon_threadsafe(lambda: set_refresh_trigger(lambda prev: prev + 1))
-                if is_done[0]:
-                    def show_snackbar():
-                        page.overlay.append(
-                            ft.SnackBar(
-                                content=ft.Text("Video download complete"),
-                                open=True,
-                                duration=2500,
-                                behavior=ft.SnackBarBehavior.FLOATING,
-                                margin=ft.Margin(left=16, top=0, right=16, bottom=10),
-                            )
-                        )
-                        page.update()
-                    page.loop.call_soon_threadsafe(show_snackbar)
+                pass
 
-            # Pass a dummy page object to prevent background thread update conflicts
             class DummyPage:
                 def update(self):
                     pass
 
-            await asyncio.to_thread(
+            download_result = await asyncio.to_thread(
                 run_download,
                 url,
                 directory,
@@ -525,19 +335,42 @@ def App(page: ft.Page):
                 on_finish,
                 on_error,
                 DummyPage(),
-                lambda paths: schedule_media_scan_later(page, paths),
+                None,
             )
+
+            is_done = False
+            if download_result and not had_error[0]:
+                try:
+                    ok, error = await publish_download_result(page, download_result, metadata)
+                except Exception as exc:
+                    ok, error = False, str(exc)
+                if ok:
+                    set_download_completed(True)
+                    set_status_text("Video saved to Gallery.")
+                    is_done = True
+                else:
+                    set_download_completed(False)
+                    set_status_text(f"Error: {error}")
+
+            finish_download(is_done)
 
         asyncio.create_task(download_flow())
 
-    # Select view based on state
     if playing_file:
+        from downloader import load_metadata
         from player import PlayerView
-        directory, _ = ensure_storage_paths(page)
-        full_path = os.path.join(directory, playing_file)
+
+        _, metadata = ensure_storage_paths(page)
+        info = load_metadata(metadata).get(playing_file, {})
+        playable_path = (
+            info.get("source_path")
+            or info.get("file_path")
+            or info.get("content_uri")
+            or playing_file
+        )
         content_view = PlayerView(
-            file_path=full_path,
-            on_close=lambda e: set_playing_file(None)
+            file_path=playable_path,
+            on_close=lambda e: set_playing_file(None),
         )
     elif active_tab == 0:
         content_view = HomeView(
@@ -546,10 +379,11 @@ def App(page: ft.Page):
             progress_visible=progress_visible,
             download_disabled=download_disabled,
             on_download_click=start_download,
-            page=page
+            page=page,
         )
     else:
         from library import LibraryView
+
         directory, metadata = ensure_storage_paths(page)
         content_view = LibraryView(
             download_dir=directory,
@@ -557,44 +391,15 @@ def App(page: ft.Page):
             on_play=set_playing_file,
             initial_scroll=scroll_offset,
             on_scroll_change=set_scroll_offset,
-            refresh_trigger=refresh_trigger
+            refresh_trigger=refresh_trigger,
         )
 
     return ft.SafeArea(content=content_view, expand=True)
 
 
 async def main(page: ft.Page):
-    # Store event loop immediately — used by schedule_media_scan_later
-    # from background download threads via call_soon_threadsafe.
-    import asyncio as _asyncio
-    page._event_loop = _asyncio.get_running_loop()
-
-    # Pre-initialize and cache storage paths
-    is_android = os.path.exists(ANDROID_STORAGE_ROOT)
-    if is_android:
-        # Save directly to the public Download directory to bypass sandbox storage
-        download_dir = os.path.join(ANDROID_STORAGE_ROOT, "Download", "VidSaver")
-    else:
-        try:
-            storage_paths = ft.StoragePaths()
-            downloads_dir = await storage_paths.get_downloads_directory()
-            if downloads_dir:
-                download_dir = os.path.join(downloads_dir, "VidSaver")
-            else:
-                download_dir = "./downloads"
-        except Exception:
-            download_dir = (
-                os.path.join(os.environ["USERPROFILE"], "Downloads")
-                if "USERPROFILE" in os.environ else "./downloads"
-            )
-
-    os.makedirs(download_dir, exist_ok=True)
-    metadata_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metadata.json")
-    
-    # Cache on page
-    page._download_dir = download_dir
-    page._metadata_path = metadata_path
-    
+    page._event_loop = asyncio.get_running_loop()
+    ensure_storage_paths(page)
     ensure_media_scanner(page)
 
     page.title = "Vidsaver"

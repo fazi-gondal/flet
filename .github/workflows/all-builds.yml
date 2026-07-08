@@ -93,6 +93,8 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
             uv.lock
+            packages/flet-media-scanner/pyproject.toml
+            packages/flet-media-scanner/src/flutter/flet_media_scanner/pubspec.yaml
 
       - name: Install Linux dependencies
         if: matrix.linux_deps

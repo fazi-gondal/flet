@@ -1,6 +1,6 @@
 [project]
 name = "vidsaver"
-version = "1.2.5"
+version = "1.2.8"
 description = ""
 readme = "README.md"
 requires-python = ">=3.14"
@@ -10,7 +10,6 @@ authors = [
 dependencies = [
     "flet==0.85.3",
     "flet-video==0.85.3",
-    "flet-permission-handler==0.85.3",
     "yt-dlp",
     "requests",
     "certifi",
@@ -53,11 +52,6 @@ dependencies = [
 ]
 
 [tool.flet.android.permission]
-# Sideloaded app (not on Play Store), so MANAGE_EXTERNAL_STORAGE is fine here —
-# it's the permission requested at runtime via ft.PermissionHandler in main.py.
-"android.permission.MANAGE_EXTERNAL_STORAGE" = true
-"android.permission.READ_EXTERNAL_STORAGE" = true
-"android.permission.WRITE_EXTERNAL_STORAGE" = true
 "android.permission.INTERNET" = true
 
 [tool.flet.extensions]
