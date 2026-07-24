@@ -186,85 +186,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Create Windows installer (NSIS)
-        if: matrix.name == 'windows'
-        shell: python
-        run: |
-          import subprocess, pathlib, os, sys
-          tag = "${{ github.ref_name }}"
-          version = tag.lstrip("v") or "0.0.0"
-          os.makedirs("installer", exist_ok=True)
-
-          # Dynamically find the main executable in the build output
-          exes = [e for e in pathlib.Path("build/windows").rglob("*.exe")
-                  if "uninstall" not in e.name.lower()]
-          exe_name = exes[0].name if exes else "vidsaver.exe"
-          print(f"Using executable: {exe_name}")
-
-          nsi = (
-            '!define APPNAME "Vidsaver"\n'
-            '!define VERSION "%(version)s"\n'
-            '!include "MUI2.nsh"\n'
-            '\n'
-            'Name "${APPNAME} ${VERSION}"\n'
-            'OutFile "installer\\Vidsaver-%(tag)s-Windows-Setup.exe"\n'
-            'InstallDir "$PROGRAMFILES64\\${APPNAME}"\n'
-            'InstallDirRegKey HKLM "Software\\${APPNAME}" "Install_Dir"\n'
-            'ShowInstDetails show\n'
-            '\n'
-            '!insertmacro MUI_PAGE_WELCOME\n'
-            '!insertmacro MUI_PAGE_DIRECTORY\n'
-            '!insertmacro MUI_PAGE_INSTFILES\n'
-            '!insertmacro MUI_PAGE_FINISH\n'
-            '!insertmacro MUI_UNPAGE_CONFIRM\n'
-            '!insertmacro MUI_UNPAGE_INSTFILES\n'
-            '!insertmacro MUI_LANGUAGE "English"\n'
-            '\n'
-            'Section "Install" SEC01\n'
-            '  SetOutPath "$INSTDIR"\n'
-            '  File /r "build\\windows\\*"\n'
-            '  CreateDirectory "$SMPROGRAMS\\${APPNAME}"\n'
-            '  CreateShortcut "$SMPROGRAMS\\${APPNAME}\\${APPNAME}.lnk" "$INSTDIR\\%(exe)s"\n'
-            '  CreateShortcut "$DESKTOP\\${APPNAME}.lnk" "$INSTDIR\\%(exe)s"\n'
-            '  WriteRegStr HKLM "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APPNAME}" "DisplayName" "${APPNAME}"\n'
-            '  WriteRegStr HKLM "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APPNAME}" "DisplayVersion" "${VERSION}"\n'
-            '  WriteRegStr HKLM "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APPNAME}" "Publisher" "NextInPK"\n'
-            '  WriteRegStr HKLM "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APPNAME}" "UninstallString" "$INSTDIR\\Uninstall.exe"\n'
-            '  WriteUninstaller "$INSTDIR\\Uninstall.exe"\n'
-            'SectionEnd\n'
-            '\n'
-            'Section "Uninstall"\n'
-            '  RMDir /r "$INSTDIR"\n'
-            '  Delete "$SMPROGRAMS\\${APPNAME}\\${APPNAME}.lnk"\n'
-            '  RMDir "$SMPROGRAMS\\${APPNAME}"\n'
-            '  Delete "$DESKTOP\\${APPNAME}.lnk"\n'
-            '  DeleteRegKey HKLM "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APPNAME}"\n'
-            'SectionEnd\n'
-          ) % {"version": version, "tag": tag, "exe": exe_name}
-
-          pathlib.Path("vidsaver.nsi").write_text(nsi, encoding="utf-8")
-          r = subprocess.run(
-              [r"C:\Program Files (x86)\NSIS\makensis.exe", "vidsaver.nsi"],
-              capture_output=True, text=True
-          )
-          print(r.stdout)
-          if r.returncode != 0:
-              print(r.stderr, file=sys.stderr)
-              sys.exit(r.returncode)
-          for f in pathlib.Path("installer").iterdir():
-              print(f"Installer: {f.name} ({f.stat().st_size:,} bytes)")
-
-      - name: Upload Windows installer
-        if: matrix.name == 'windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-installer
-          path: installer/Vidsaver-*-Windows-Setup.exe
-          compression-level: 0
-          overwrite: true
-          if-no-files-found: error
-          retention-days: 30
-
   release:
     name: Publish GitHub Release
     needs: build
@@ -300,14 +221,6 @@ jobs:
             exit 1
           fi
 
-          INSTALLER="$(find artifacts/windows-installer -type f -name "*-Windows-Setup.exe" 2>/dev/null | head -n 1)"
-          if [ -n "${INSTALLER}" ]; then
-            cp "${INSTALLER}" "release/Vidsaver-${VERSION}-Windows-Setup.exe"
-          else
-            echo "Missing Windows installer artifact." >&2
-            exit 1
-          fi
-
           if [ ! -d "artifacts/apk-build" ]; then
             echo "Missing Android APK artifact." >&2
             exit 1
@@ -334,7 +247,6 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             release/Vidsaver-${{ github.ref_name }}-Windows.zip
-            release/Vidsaver-${{ github.ref_name }}-Windows-Setup.exe
             release/Vidsaver-${{ github.ref_name }}-Android-arm64-v8a.apk
             release/Vidsaver-${{ github.ref_name }}-Android-arm64-v8a.zip
 

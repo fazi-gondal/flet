@@ -18,7 +18,6 @@ Vidsaver is a Flet-based video downloader for saving videos from supported socia
 - GitHub Releases attach:
   ```text
   Vidsaver-vX.Y.Z-Windows.zip           (portable, extract and run)
-  Vidsaver-vX.Y.Z-Windows-Setup.exe     (installer, double-click to install)
   Vidsaver-vX.Y.Z-Android-arm64-v8a.apk (raw APK, direct sideload)
   Vidsaver-vX.Y.Z-Android-arm64-v8a.zip (compressed APK, extract then install)
   ```
@@ -179,8 +178,7 @@ After this one-time setup, future release APKs are signed automatically with the
 
 ## Install And Update Notes
 
-- **Windows (installer)**: Download `Windows-Setup.exe` → double-click to install. Creates Start Menu and Desktop shortcuts. Includes uninstaller via Add/Remove Programs.
-- **Windows (portable)**: Download `Windows.zip` → extract anywhere and run `vidsaver.exe`.
+- **Windows**: Download `Windows.zip` → extract anywhere and run `vidsaver.exe`.
 - **Android**: Download `Android-arm64-v8a.apk` for direct sideload, or `Android-arm64-v8a.zip` (extract then install the `.apk` inside).
 - If an older version was installed from a wrong ABI, split APK, or different signing key, Android may show an install/package mismatch error.
 - In that case, uninstall the old app once, then install the new signed APK.
